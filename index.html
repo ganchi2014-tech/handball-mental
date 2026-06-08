@@ -1046,7 +1046,7 @@
       const [selectedRosterId, setSelectedRosterId] = useState(null);
       const [filterGrade, setFilterGrade] = useState('all');
       const [coachMode, setCoachMode] = useState(false); // 顧問として登録するか
-      const [playerMode, setPlayerMode] = useState(false); // 選手として登録するか
+      const [playerMode, setPlayerMode] = useState(true); // 初期は選手画面（顧問は下部ボタンから）
       const [coachName, setCoachName] = useState('');
 
       // 名簿リスト（active && 未連携優先）
@@ -1238,9 +1238,6 @@
                 顧問の方が「顧問 → 名簿管理」で選手を登録すると、ここに一覧が出ます。
               </p>
               <button className="btn" onClick={() => setCoachMode(true)}>📋 顧問として登録する</button>
-              <div style={{textAlign:'center', marginTop:12}}>
-                <button className="btn-ghost" onClick={() => setPlayerMode(false)}>← 戻る</button>
-              </div>
             </div>
           ) : (
             <div style={{maxWidth:480, margin:'0 auto', width:'100%'}}>
@@ -1298,7 +1295,7 @@
               )}
 
               <div style={{textAlign:'center', marginTop:16}}>
-                <button className="btn-ghost" onClick={() => setPlayerMode(false)}>← 戻る（顧問はこちら）</button>
+                <button className="btn-ghost" onClick={() => setCoachMode(true)}>📋 顧問・コーチの方はこちら</button>
               </div>
             </div>
           )}
