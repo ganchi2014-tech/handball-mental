@@ -625,8 +625,105 @@
         const ref = fbDB.ref('users');
         const handler = ref.on('value', (snap) => callback(snap.val() || {}));
         return () => ref.off('value', handler);
+      },
+      // ----- 名簿マスター（analyzer と共有） -----
+      subscribeRoster: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('roster');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}));
+        return () => ref.off('value', handler);
+      },
+      upsertRoster: async (rosterId, data) => {
+        if (!fbDB) return;
+        const payload = { ...data, updatedAt: firebase.database.ServerValue.TIMESTAMP };
+        if (!data.createdAt) payload.createdAt = firebase.database.ServerValue.TIMESTAMP;
+        return fbDB.ref('roster/' + rosterId).update(payload);
+      },
+      deleteRoster: async (rosterId) => {
+        if (!fbDB) return;
+        return fbDB.ref('roster/' + rosterId).remove();
+      },
+      // ----- rosterId ↔ uid 双方向マッピング -----
+      linkRosterToUid: async (rosterId, authUid) => {
+        if (!fbDB || !rosterId || !authUid) return;
+        return fbDB.ref('rosterToUid/' + rosterId).set(authUid);
+      },
+      subscribeRosterToUid: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('rosterToUid');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}));
+        return () => ref.off('value', handler);
+      },
+      // ----- 試合データ（CSV取込） -----
+      saveGameStats: async (authUid, gameId, rowIdx, statsRow) => {
+        if (!fbDB || !authUid) return;
+        return fbDB.ref('users/' + authUid + '/gameStats/' + gameId + '/' + rowIdx).set(statsRow);
+      },
+      subscribeMyGameStats: (authUid, callback) => {
+        if (!fbDB || !authUid) return () => {};
+        const ref = fbDB.ref('users/' + authUid + '/gameStats');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}));
+        return () => ref.off('value', handler);
       }
     };
+
+    // ====== Roster Helpers（学年自動計算） ======
+    // 入学年から現在の学年を計算（4月始まり）
+    function computeGrade(enrollmentYear, refDate) {
+      if (!enrollmentYear) return 0;
+      const d = refDate || new Date();
+      // 学校年度: 4月1日始まり
+      const schoolYear = (d.getMonth() + 1) >= 4 ? d.getFullYear() : d.getFullYear() - 1;
+      return schoolYear - enrollmentYear + 1;
+    }
+    // 学年→丸数字 (analyzer互換: ①②③)
+    function gradeSymbol(grade) {
+      return ['', '①', '②', '③'][grade] || '';
+    }
+    // 名簿エントリから analyzer 表示名を作る
+    function rosterDisplayName(roster, refDate) {
+      const g = computeGrade(roster.enrollmentYear, refDate);
+      return gradeSymbol(g) + (roster.surname || '');
+    }
+    // analyzer の名前 (③赤塚) から surname と grade を取出す
+    function parseAnalyzerName(name) {
+      const m = String(name || '').match(/^([①②③])(.+)$/);
+      if (m) {
+        const grade = ['①','②','③'].indexOf(m[1]) + 1;
+        return { surname: m[2], grade };
+      }
+      return { surname: name, grade: 0 };
+    }
+    // 入学年を学年から逆算（今年度ベース）
+    function gradeToEnrollmentYear(grade, refDate) {
+      const d = refDate || new Date();
+      const schoolYear = (d.getMonth() + 1) >= 4 ? d.getFullYear() : d.getFullYear() - 1;
+      return schoolYear - grade + 1;
+    }
+    // analyzer互換: デフォルト32名（入学年は今年度から逆算）
+    function makeDefaultRosterEntries(refDate) {
+      const d = refDate || new Date();
+      const g3 = gradeToEnrollmentYear(3, d);
+      const g2 = gradeToEnrollmentYear(2, d);
+      const g1 = gradeToEnrollmentYear(1, d);
+      const gkSet = new Set(['桑原','杉本','小川','田口','関山']);
+      const list = [
+        // 3年（10名）
+        ['赤塚',g3],['岩噌',g3],['川崎',g3],['北村',g3],['辻',g3],['中田',g3],['伴',g3],['山本',g3],['桑原',g3],['杉本',g3],
+        // 2年（10名）
+        ['新井',g2],['猪田',g2],['北林',g2],['田端',g2],['藤川',g2],['松岡',g2],['村田',g2],['安田',g2],['小川',g2],['田口',g2],
+        // 1年（12名）
+        ['石黒',g1],['岩噌',g1],['大野',g1],['北川',g1],['嶌本',g1],['福原',g1],['増田',g1],['水田',g1],['宮崎',g1],['森井',g1],['山崎',g1],['関山',g1]
+      ];
+      return list.map(([surname, enrollmentYear]) => ({
+        surname,
+        fullName: '',
+        enrollmentYear,
+        position: gkSet.has(surname) ? 'GK' : '',
+        isGK: gkSet.has(surname),
+        active: true
+      }));
+    }
 
     // 旧APIを維持（既存呼び出しのため）
     storage.load = storage.loadCache;
@@ -661,9 +758,27 @@
       const [authReady, setAuthReady] = useState(false);
       const [allUsersData, setAllUsersData] = useState({});
       const [syncStatus, setSyncStatus] = useState('cache'); // cache/syncing/synced/offline
+      const [roster, setRoster] = useState({});         // {rosterId: {...}}
+      const [rosterToUid, setRosterToUid] = useState({}); // {rosterId: authUid}
+      const [myGameStats, setMyGameStats] = useState({}); // 自分のCSV取込済データ
       const lastCloudJsonRef = useRef('');
       const writeTimerRef = useRef(null);
       const firstCloudLoadRef = useRef(false);
+
+      // ── 名簿マスター購読（常時）
+      useEffect(() => {
+        if (!fbDB) return;
+        const unsub1 = storage.subscribeRoster(setRoster);
+        const unsub2 = storage.subscribeRosterToUid(setRosterToUid);
+        return () => { unsub1(); unsub2(); };
+      }, []);
+
+      // ── 自分の試合データ（CSV取込済）購読
+      useEffect(() => {
+        if (!authUid) { setMyGameStats({}); return; }
+        const unsub = storage.subscribeMyGameStats(authUid, setMyGameStats);
+        return unsub;
+      }, [authUid]);
 
       // ── Firebase 認証状態監視
       useEffect(() => {
@@ -750,23 +865,32 @@
       if (!state.user) {
         return (
           <>
-            <Login onLogin={async (userInput) => {
-              try {
-                let uid = authUid;
-                if (!uid && fbAuth) {
-                  const cred = await fbAuth.signInAnonymously();
-                  uid = cred.user.uid;
+            <Login
+              roster={roster}
+              rosterToUid={rosterToUid}
+              onLogin={async (userInput) => {
+                try {
+                  let uid = authUid;
+                  if (!uid && fbAuth) {
+                    const cred = await fbAuth.signInAnonymously();
+                    uid = cred.user.uid;
+                  }
+                  const finalUser = {
+                    ...userInput,
+                    id: uid || userInput.id, // Firebase uid を採用（失敗時はローカルid）
+                  };
+                  // rosterId が指定されていれば双方向マップを保存
+                  if (userInput.rosterId && uid) {
+                    try { await storage.linkRosterToUid(userInput.rosterId, uid); }
+                    catch (e) { console.warn('[link roster]', e); }
+                  }
+                  setState(prev => ({ ...prev, user: finalUser }));
+                } catch (e) {
+                  console.error('[Login] auth failed:', e);
+                  alert('オンライン接続に失敗しました。インターネット接続を確認してください。\n' + e.message);
                 }
-                const finalUser = {
-                  ...userInput,
-                  id: uid || userInput.id, // Firebase uid を採用（失敗時はローカルid）
-                };
-                setState(prev => ({ ...prev, user: finalUser }));
-              } catch (e) {
-                console.error('[Login] auth failed:', e);
-                alert('オンライン接続に失敗しました。インターネット接続を確認してください。\n' + e.message);
-              }
-            }} />
+              }}
+            />
             {toast && <div className="toast">{toast}</div>}
           </>
         );
@@ -808,8 +932,17 @@
             {view === 'monthly' && (
               <Monthly state={state} update={update} showToast={showToast} />
             )}
+            {view === 'stats' && !state.user.isCoach && (
+              <MyStats state={state} myGameStats={myGameStats} />
+            )}
             {view === 'coach' && state.user.isCoach && (
-              <CoachDashboard state={state} allUsersData={allUsersData} />
+              <CoachDashboard
+                state={state}
+                allUsersData={allUsersData}
+                roster={roster}
+                rosterToUid={rosterToUid}
+                showToast={showToast}
+              />
             )}
           </div>
           <BottomNav view={view} onChange={setView} isCoach={state.user.isCoach} />
@@ -819,32 +952,77 @@
     }
 
     // ====== Login ======
-    function Login({ onLogin }) {
-      const [mode, setMode] = useState('login'); // or 'register'
-      const [name, setName] = useState('');
-      const [grade, setGrade] = useState('2');
-      const [position, setPosition] = useState('CB');
+    function Login({ onLogin, roster, rosterToUid }) {
       const [pin, setPin] = useState('');
       const [savedPin, setSavedPin] = useState(localStorage.getItem(PIN_KEY) || '');
       const [savedName, setSavedName] = useState(localStorage.getItem(NAME_KEY) || '');
       const [busy, setBusy] = useState(false);
+      const [selectedRosterId, setSelectedRosterId] = useState(null);
+      const [filterGrade, setFilterGrade] = useState('all');
+      const [coachMode, setCoachMode] = useState(false); // 顧問として登録するか
+      const [coachName, setCoachName] = useState('');
 
-      const handleRegister = async () => {
-        if (!name || !pin || pin.length !== 4) {
-          alert('名前と4桁PINを入力してください');
-          return;
+      // 名簿リスト（active && 未連携優先）
+      const rosterList = useMemo(() => {
+        const arr = Object.entries(roster || {}).map(([id, data]) => ({
+          id,
+          ...data,
+          grade: computeGrade(data.enrollmentYear),
+          displayName: rosterDisplayName(data),
+          linked: !!(rosterToUid && rosterToUid[id])
+        })).filter(e => e.active !== false);
+        arr.sort((a, b) => {
+          if (a.linked !== b.linked) return a.linked ? 1 : -1; // 未連携を上に
+          if (a.grade !== b.grade) return a.grade - b.grade;
+          return (a.surname || '').localeCompare(b.surname || '', 'ja');
+        });
+        return arr;
+      }, [roster, rosterToUid]);
+
+      const filtered = filterGrade === 'all' ? rosterList : rosterList.filter(e => e.grade === Number(filterGrade));
+      const selectedEntry = rosterList.find(e => e.id === selectedRosterId);
+
+      // 選手として登録（名簿選択）
+      const handleRegisterAsPlayer = async () => {
+        if (!selectedEntry) { alert('名簿から自分を選択してください'); return; }
+        if (!pin || pin.length !== 4) { alert('4桁PINを入力してください'); return; }
+        if (selectedEntry.linked) {
+          if (!confirm('この選手は既に別端末で登録されています。\n上書きしますか？（前の端末からはログアウトされます）')) return;
         }
         setBusy(true);
         const hash = hashPin(pin);
+        const displayName = selectedEntry.fullName || selectedEntry.surname;
         localStorage.setItem(PIN_KEY, hash);
-        localStorage.setItem(NAME_KEY, name);
+        localStorage.setItem(NAME_KEY, displayName);
         const user = {
-          id: uid(), // 暫定id（onLogin内でFirebase uidに置換される）
-          name,
-          grade: Number(grade),
-          position,
+          id: uid(),
+          name: displayName,
+          grade: selectedEntry.grade,
+          position: selectedEntry.position || '',
+          rosterId: selectedRosterId,
+          enrollmentYear: selectedEntry.enrollmentYear,
           createdAt: Date.now(),
           isCoach: false
+        };
+        try { await onLogin(user); } finally { setBusy(false); }
+      };
+
+      // 顧問として登録（名簿に居ない）
+      const handleRegisterAsCoach = async () => {
+        if (!coachName) { alert('顧問名を入力してください'); return; }
+        if (!pin || pin.length !== 4) { alert('4桁PINを入力してください'); return; }
+        setBusy(true);
+        const hash = hashPin(pin);
+        localStorage.setItem(PIN_KEY, hash);
+        localStorage.setItem(NAME_KEY, coachName);
+        const user = {
+          id: uid(),
+          name: coachName,
+          grade: 0,
+          position: '顧問',
+          rosterId: null,
+          createdAt: Date.now(),
+          isCoach: true
         };
         try { await onLogin(user); } finally { setBusy(false); }
       };
@@ -856,7 +1034,7 @@
         }
         setBusy(true);
         const saved = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
-        const user = (saved && saved.user) ? saved.user : { id: uid(), name: savedName, grade: 2, position: 'CB', createdAt: Date.now(), isCoach: false };
+        const user = (saved && saved.user) ? saved.user : { id: uid(), name: savedName, grade: 0, position: '', createdAt: Date.now(), isCoach: false };
         try { await onLogin(user); } finally { setBusy(false); }
       };
 
@@ -868,7 +1046,8 @@
         location.reload();
       };
 
-      if (savedPin && mode === 'login') {
+      // ── 既にこの端末で登録済（PIN入力モード）
+      if (savedPin) {
         return (
           <div className="login">
             <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
@@ -896,51 +1075,112 @@
         );
       }
 
-      return (
-        <div className="login">
-          <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
-          <p className="subtitle">男子ハンドボール部 メンタル指導</p>
-          <div className="login-card">
-            <h2>初回設定</h2>
-            <div className="form-group">
-              <label>名前</label>
-              <input value={name} onChange={e => setName(e.target.value)} placeholder="山田太郎" />
+      // ── 顧問登録モード
+      if (coachMode) {
+        return (
+          <div className="login">
+            <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
+            <p className="subtitle">顧問・コーチ登録</p>
+            <div className="login-card">
+              <h2>顧問として登録</h2>
+              <div className="form-group">
+                <label>お名前</label>
+                <input value={coachName} onChange={e => setCoachName(e.target.value)} placeholder="ガンチ先生" />
+              </div>
+              <div className="form-group">
+                <label>4桁PIN（次回からこれでログイン）</label>
+                <input
+                  type="password" inputMode="numeric" pattern="[0-9]*" maxLength="4"
+                  className="pin-input" value={pin}
+                  onChange={e => setPin(e.target.value.replace(/[^0-9]/g,''))}
+                  placeholder="••••"
+                />
+              </div>
+              <button className="btn" disabled={busy} onClick={handleRegisterAsCoach}>{busy ? '接続中...' : '登録して開始'}</button>
+              <div style={{marginTop:12, textAlign:'center'}}>
+                <button className="btn-ghost" onClick={() => setCoachMode(false)}>← 選手として登録</button>
+              </div>
             </div>
-            <div className="form-group">
-              <label>学年</label>
-              <select value={grade} onChange={e => setGrade(e.target.value)}>
-                <option value="1">1年</option>
-                <option value="2">2年</option>
-                <option value="3">3年</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label>ポジション</label>
-              <select value={position} onChange={e => setPosition(e.target.value)}>
-                <option value="GK">GK</option>
-                <option value="LW">LW（左サイド）</option>
-                <option value="RW">RW（右サイド）</option>
-                <option value="LB">LB（左バック）</option>
-                <option value="CB">CB（センターバック）</option>
-                <option value="RB">RB（右バック）</option>
-                <option value="PV">PV（ピボット）</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label>4桁PIN（次回からこれでログイン）</label>
-              <input
-                type="password"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength="4"
-                className="pin-input"
-                value={pin}
-                onChange={e => setPin(e.target.value.replace(/[^0-9]/g,''))}
-                placeholder="••••"
-              />
-            </div>
-            <button className="btn" disabled={busy} onClick={handleRegister}>{busy ? '接続中...' : '登録して開始'}</button>
           </div>
+        );
+      }
+
+      // ── 選手登録モード（名簿から選択）
+      return (
+        <div className="login" style={{padding:'24px 16px', alignItems:'stretch'}}>
+          <div style={{textAlign:'center', marginBottom:24}}>
+            <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
+            <p className="subtitle">男子ハンドボール部 メンタル指導</p>
+          </div>
+
+          {rosterList.length === 0 ? (
+            <div className="login-card" style={{maxWidth:480, margin:'0 auto'}}>
+              <h2>名簿がまだありません</h2>
+              <p className="text-small text-muted" style={{marginBottom:16}}>
+                顧問の方が「顧問モード →名簿管理」で選手を登録してください。
+              </p>
+              <button className="btn" onClick={() => setCoachMode(true)}>👤 顧問として登録する</button>
+            </div>
+          ) : (
+            <div style={{maxWidth:480, margin:'0 auto', width:'100%'}}>
+              <div className="login-card">
+                <h2>① 自分を選択</h2>
+                <div className="chip-group" style={{marginBottom:12, flexWrap:'wrap'}}>
+                  {['all','1','2','3'].map(g => (
+                    <div key={g}
+                      className={'chip ' + (filterGrade === g ? 'selected' : '')}
+                      onClick={() => setFilterGrade(g)}
+                    >{g === 'all' ? '全' : g + '年'}</div>
+                  ))}
+                </div>
+                <div style={{maxHeight:300, overflowY:'auto', border:'1px solid var(--border)', borderRadius:8, padding:4}}>
+                  {filtered.map(e => (
+                    <div key={e.id}
+                      onClick={() => !e.linked && setSelectedRosterId(e.id)}
+                      style={{
+                        padding:'10px 12px', margin:'4px 0', borderRadius:6, cursor: e.linked ? 'not-allowed' : 'pointer',
+                        background: selectedRosterId === e.id ? 'rgba(255,59,90,0.2)' : (e.linked ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.05)'),
+                        border: selectedRosterId === e.id ? '1px solid var(--primary)' : '1px solid transparent',
+                        opacity: e.linked ? 0.4 : 1
+                      }}>
+                      <div style={{fontSize:'15px', fontWeight: e.linked ? 'normal' : 'bold'}}>
+                        {e.displayName} {e.fullName && <span className="text-small text-muted">{e.fullName}</span>}
+                        {e.linked && <span className="text-small text-muted" style={{marginLeft:8}}>(登録済)</span>}
+                      </div>
+                      <div className="text-small text-muted">
+                        {e.grade > 0 && e.grade <= 3 ? `${e.grade}年` : ''}
+                        {e.position && ` / ${e.position}`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {selectedEntry && (
+                <div className="login-card" style={{marginTop:12}}>
+                  <h2>② PIN を設定</h2>
+                  <p className="text-small text-muted" style={{marginTop:-8, marginBottom:12}}>
+                    選択: <strong style={{color:'var(--primary)'}}>{selectedEntry.displayName}</strong>
+                    {selectedEntry.fullName && <span>（{selectedEntry.fullName}）</span>}
+                  </p>
+                  <div className="form-group">
+                    <label>4桁PIN（次回からこれでログイン）</label>
+                    <input
+                      type="password" inputMode="numeric" pattern="[0-9]*" maxLength="4"
+                      className="pin-input" value={pin}
+                      onChange={e => setPin(e.target.value.replace(/[^0-9]/g,''))}
+                      placeholder="••••"
+                    />
+                  </div>
+                  <button className="btn" disabled={busy || !pin || pin.length !== 4} onClick={handleRegisterAsPlayer}>{busy ? '接続中...' : '登録して開始'}</button>
+                </div>
+              )}
+
+              <div style={{textAlign:'center', marginTop:16}}>
+                <button className="btn-ghost" onClick={() => setCoachMode(true)}>👤 顧問として登録する</button>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
@@ -993,16 +1233,21 @@
 
     // ====== Bottom Nav ======
     function BottomNav({ view, onChange, isCoach }) {
-      const items = [
+      const items = isCoach ? [
         { id: 'home', icon: '🏠', label: 'ホーム' },
         { id: 'reflection', icon: '📝', label: '振り返り' },
         { id: 'izof', icon: '🎯', label: 'IZOF' },
         { id: 'declaration', icon: '✅', label: '宣言' },
-        { id: 'monthly', icon: '📊', label: '月評価' }
+        { id: 'monthly', icon: '📊', label: '月評価' },
+        { id: 'coach', icon: '👥', label: '顧問' }
+      ] : [
+        { id: 'home', icon: '🏠', label: 'ホーム' },
+        { id: 'reflection', icon: '📝', label: '振り返り' },
+        { id: 'stats', icon: '📈', label: 'マイ統計' },
+        { id: 'izof', icon: '🎯', label: 'IZOF' },
+        { id: 'declaration', icon: '✅', label: '宣言' },
+        { id: 'monthly', icon: '📊', label: '月' }
       ];
-      if (isCoach) {
-        items.push({ id: 'coach', icon: '👥', label: '顧問' });
-      }
       return (
         <div className="nav">
           {items.map(it => (
@@ -1638,8 +1883,9 @@
     }
 
     // ====== Coach Dashboard (P2: 全選手データを Firebase RTDB から購読) ======
-    function CoachDashboard({ state, allUsersData }) {
+    function CoachDashboard({ state, allUsersData, roster, rosterToUid, showToast }) {
       const [selected, setSelected] = useState(null);
+      const [tab, setTab] = useState('overview'); // overview / roster / csv
 
       // RTDB のデータを選手リストに整形
       const players = useMemo(() => {
@@ -1685,9 +1931,21 @@
         return <PlayerDetail player={selected} onBack={() => setSelected(null)} />;
       }
 
+      if (tab === 'roster') {
+        return <RosterManagement roster={roster} rosterToUid={rosterToUid} allUsersData={allUsersData} showToast={showToast} onBack={() => setTab('overview')} />;
+      }
+      if (tab === 'csv') {
+        return <CsvImport roster={roster} rosterToUid={rosterToUid} showToast={showToast} onBack={() => setTab('overview')} />;
+      }
+
       return (
         <>
           <div className="section-h">顧問Dashboard</div>
+
+          <div className="coach-tabs" style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap'}}>
+            <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => setTab('roster')}>👥 名簿管理 ({Object.keys(roster).length}名)</button>
+            <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => setTab('csv')}>📥 CSV取込</button>
+          </div>
 
           <div className="card">
             <div className="card-title">チーム全体</div>
@@ -1845,6 +2103,569 @@
           ))}
         </>
       );
+    }
+
+    // ====== My Stats (選手用: 自分のCSV取込済データを表示) ======
+    function MyStats({ state, myGameStats }) {
+      const [selectedGame, setSelectedGame] = useState(null);
+
+      // gameStats を試合別に集計
+      const games = useMemo(() => {
+        const arr = Object.entries(myGameStats || {}).map(([gameId, rows]) => {
+          const rowArr = Object.values(rows || {});
+          let shots = 0, goals = 0, missed = 0, turnovers = 0;
+          let firstDate = '', opponent = '';
+          rowArr.forEach(r => {
+            if (!firstDate && r.date) firstDate = r.date;
+            if (!opponent && r.opponent) opponent = r.opponent;
+            if (r.mode === 'attack') {
+              shots++;
+              if (r.result === 'goal') goals++;
+              else missed++;
+            }
+            if (r.mode === 'turnover') turnovers++;
+          });
+          return {
+            gameId,
+            date: firstDate,
+            opponent: opponent || '(相手名なし)',
+            rowCount: rowArr.length,
+            shots, goals, missed, turnovers,
+            goalRate: shots > 0 ? Math.round(goals / shots * 100) : 0,
+            rows: rowArr
+          };
+        });
+        arr.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        return arr;
+      }, [myGameStats]);
+
+      // 累計
+      const total = useMemo(() => {
+        let shots = 0, goals = 0, missed = 0, turnovers = 0;
+        games.forEach(g => { shots += g.shots; goals += g.goals; missed += g.missed; turnovers += g.turnovers; });
+        return { shots, goals, missed, turnovers, goalRate: shots > 0 ? Math.round(goals / shots * 100) : 0 };
+      }, [games]);
+
+      // 振り返りと試合データの紐付け
+      const reflectionsByDate = useMemo(() => {
+        const map = {};
+        (state.reflections || []).forEach(r => {
+          if (r.gameDate) map[r.gameDate] = r;
+        });
+        return map;
+      }, [state.reflections]);
+
+      if (selectedGame) {
+        return <GameDetail game={selectedGame} reflection={reflectionsByDate[selectedGame.date]} onBack={() => setSelectedGame(null)} />;
+      }
+
+      return (
+        <>
+          <div className="section-h">マイ統計（試合データ）</div>
+
+          {games.length === 0 ? (
+            <div className="card">
+              <div className="card-title">まだ試合データがありません</div>
+              <div className="card-subtitle">
+                顧問が handball-analyzer から CSVを取り込むと、ここに自分のデータが表示されます。
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="card">
+                <div className="card-title">累計</div>
+                <div className="summary-stats" style={{marginTop:12}}>
+                  <div className="stat-card">
+                    <div className="num">{total.goals}</div>
+                    <div className="label">ゴール</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="num">{total.shots}</div>
+                    <div className="label">シュート</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="num">{total.goalRate}%</div>
+                    <div className="label">決定率</div>
+                  </div>
+                </div>
+                <div className="stat-row mt-16">
+                  <span className="label">参加試合</span>
+                  <span className="value">{games.length} 試合</span>
+                </div>
+                <div className="stat-row">
+                  <span className="label">ターンオーバー</span>
+                  <span className="value">{total.turnovers} 回</span>
+                </div>
+              </div>
+
+              <div className="section-h">試合別</div>
+              {games.map(g => {
+                const hasReflection = !!reflectionsByDate[g.date];
+                return (
+                  <div key={g.gameId} className="list-item" onClick={() => setSelectedGame(g)} style={{cursor:'pointer'}}>
+                    <div>
+                      <div className="title">vs {g.opponent}</div>
+                      <div className="sub">{g.date}</div>
+                      <div className="sub" style={{marginTop:4}}>
+                        {g.goals}G / {g.shots}S
+                        {g.goalRate > 0 && ` (${g.goalRate}%)`}
+                        {g.turnovers > 0 && ` / TO${g.turnovers}`}
+                      </div>
+                      {hasReflection && (
+                        <div className="sub" style={{marginTop:4, color:'var(--accent)'}}>📝 メンタル振り返り有</div>
+                      )}
+                    </div>
+                    <div className="right">
+                      <div className="score">{g.goals}</div>
+                      <div className="sub">G</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </>
+      );
+    }
+
+    function GameDetail({ game, reflection, onBack }) {
+      // コース別集計
+      const courseStats = {};
+      game.rows.filter(r => r.mode === 'attack').forEach(r => {
+        const k = r.course || '(未分類)';
+        if (!courseStats[k]) courseStats[k] = { shots: 0, goals: 0 };
+        courseStats[k].shots++;
+        if (r.result === 'goal') courseStats[k].goals++;
+      });
+      const courseArr = Object.entries(courseStats).sort((a,b) => b[1].shots - a[1].shots);
+
+      return (
+        <>
+          <button className="btn-ghost mb-16" onClick={onBack}>← マイ統計に戻る</button>
+          <div className="section-h">{game.date} vs {game.opponent}</div>
+
+          <div className="card">
+            <div className="card-title">この試合の自分</div>
+            <div className="summary-stats" style={{marginTop:12}}>
+              <div className="stat-card"><div className="num">{game.goals}</div><div className="label">ゴール</div></div>
+              <div className="stat-card"><div className="num">{game.shots}</div><div className="label">シュート</div></div>
+              <div className="stat-card"><div className="num">{game.goalRate}%</div><div className="label">決定率</div></div>
+            </div>
+            <div className="stat-row mt-16"><span className="label">外し</span><span className="value">{game.missed} 本</span></div>
+            <div className="stat-row"><span className="label">ターンオーバー</span><span className="value">{game.turnovers} 回</span></div>
+          </div>
+
+          {courseArr.length > 0 && (
+            <>
+              <div className="section-h">コース別</div>
+              {courseArr.map(([course, s]) => {
+                const rate = s.shots > 0 ? Math.round(s.goals / s.shots * 100) : 0;
+                return (
+                  <div key={course} className="list-item">
+                    <div>
+                      <div className="title">{course}</div>
+                      <div className="sub">{s.goals}/{s.shots} ({rate}%)</div>
+                    </div>
+                    <div className="right">
+                      <div className="score">{s.goals}</div>
+                      <div className="sub">G</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+
+          {reflection && (
+            <>
+              <div className="section-h">メンタル振り返り</div>
+              <div className="card">
+                <div className="stat-row"><span className="label">調子</span><span className="value">{reflection.selfScore}/10</span></div>
+                {reflection.bestPlay && <div className="stat-row"><span className="label">ベスト</span><span className="value" style={{maxWidth:'70%', textAlign:'right'}}>{reflection.bestPlay}</span></div>}
+                {reflection.improvePlay && <div className="stat-row"><span className="label">改善</span><span className="value" style={{maxWidth:'70%', textAlign:'right'}}>{reflection.improvePlay}</span></div>}
+                {reflection.mentalFinding && <div className="stat-row"><span className="label">気づき</span><span className="value" style={{maxWidth:'70%', textAlign:'right'}}>{reflection.mentalFinding}</span></div>}
+                {reflection.nextTask && <div className="stat-row"><span className="label">次の課題</span><span className="value" style={{maxWidth:'70%', textAlign:'right'}}>{reflection.nextTask}</span></div>}
+              </div>
+
+              <div className="card mt-16">
+                <div className="card-title">数字とメンタルを結びつける</div>
+                <div className="card-subtitle" style={{lineHeight:1.7}}>
+                  決定率 {game.goalRate}% の試合で「{reflection.mentalFinding || reflection.bestPlay || '−'}」と感じた。<br/>
+                  → 次回 IZOFを記録するときは、その状態を再現できるか確認しよう。
+                </div>
+              </div>
+            </>
+          )}
+
+          {!reflection && (
+            <div className="card mt-16">
+              <div className="card-title">この試合のメンタル振り返りはまだ未記録</div>
+              <div className="card-subtitle">
+                「振り返り」タブから {game.date} の振り返りを追加すると、ここに数字と感情を並べて見られます。
+              </div>
+            </div>
+          )}
+        </>
+      );
+    }
+
+    // ====== Roster Management (顧問用) ======
+    function RosterManagement({ roster, rosterToUid, allUsersData, showToast, onBack }) {
+      const [editing, setEditing] = useState(null); // {id, ...data} or 'new'
+      const [filterGrade, setFilterGrade] = useState('all');
+
+      // 名簿を配列化（学年・苗字順）
+      const entries = useMemo(() => {
+        const arr = Object.entries(roster || {}).map(([id, data]) => ({
+          id,
+          ...data,
+          grade: computeGrade(data.enrollmentYear),
+          displayName: rosterDisplayName(data)
+        })).filter(e => e.active !== false);
+        arr.sort((a, b) => {
+          if (a.grade !== b.grade) return a.grade - b.grade;
+          return (a.surname || '').localeCompare(b.surname || '', 'ja');
+        });
+        return arr;
+      }, [roster]);
+
+      const filtered = filterGrade === 'all' ? entries : entries.filter(e => e.grade === Number(filterGrade));
+
+      const linkedCount = entries.filter(e => rosterToUid && rosterToUid[e.id]).length;
+
+      const seedDefault = async () => {
+        if (Object.keys(roster).length > 0) {
+          if (!confirm(`既に ${Object.keys(roster).length} 名登録されています。デフォルト32名を追加で投入しますか？`)) return;
+        } else {
+          if (!confirm('analyzer デフォルトの32名を投入しますか？')) return;
+        }
+        const defaults = makeDefaultRosterEntries();
+        const fbDB = window.fbDB;
+        for (const entry of defaults) {
+          const newId = fbDB.ref('roster').push().key;
+          await storage.upsertRoster(newId, entry);
+        }
+        showToast(`32名を投入しました`);
+      };
+
+      const save = async (data) => {
+        const fbDB = window.fbDB;
+        const id = editing.id || fbDB.ref('roster').push().key;
+        await storage.upsertRoster(id, {
+          surname: data.surname,
+          fullName: data.fullName || '',
+          enrollmentYear: Number(data.enrollmentYear),
+          position: data.position || '',
+          isGK: !!data.isGK,
+          active: true
+        });
+        setEditing(null);
+        showToast(editing.id ? '更新しました' : '追加しました');
+      };
+
+      const remove = async () => {
+        if (!confirm(`${editing.surname} を削除しますか？\n\n試合データへの紐付けが切れますが、復元はできません。\n（卒業生は「アクティブ無効化」を推奨）`)) return;
+        await storage.deleteRoster(editing.id);
+        setEditing(null);
+        showToast('削除しました');
+      };
+
+      return (
+        <>
+          <button className="btn-ghost mb-16" onClick={onBack}>← 顧問Dashboardに戻る</button>
+          <div className="section-h">名簿管理 <span className="small">{entries.length}名 / mental連携 {linkedCount}名</span></div>
+
+          {entries.length === 0 && (
+            <div className="card">
+              <div className="card-title">名簿がまだ空です</div>
+              <div className="card-subtitle">analyzer のデフォルト32名を投入できます</div>
+              <button className="btn mt-16" onClick={seedDefault}>📋 デフォルト32名を投入</button>
+            </div>
+          )}
+
+          {entries.length > 0 && (
+            <>
+              <div className="chip-group" style={{marginBottom:12, flexWrap:'wrap'}}>
+                {['all','1','2','3'].map(g => (
+                  <div key={g} className={'chip ' + (filterGrade === g ? 'selected' : '')}
+                    onClick={() => setFilterGrade(g)}
+                  >{g === 'all' ? '全' : g + '年'}</div>
+                ))}
+              </div>
+              <button className="btn mb-16" onClick={() => setEditing({grade:1})}>+ 選手を追加</button>
+            </>
+          )}
+
+          {filtered.map(e => {
+            const linked = rosterToUid && rosterToUid[e.id];
+            const linkedUserData = linked && allUsersData[linked] && allUsersData[linked].state && allUsersData[linked].state.user;
+            return (
+              <div key={e.id} className="list-item" onClick={() => setEditing(e)} style={{cursor:'pointer'}}>
+                <div>
+                  <div className="title">{e.displayName} {e.fullName && <span className="text-small text-muted">({e.fullName})</span>}</div>
+                  <div className="sub">
+                    {e.grade > 0 && e.grade <= 3 ? `${e.grade}年` : '卒業/不明'}
+                    {e.position && ` / ${e.position}`}
+                    {e.isGK && ' / GK'}
+                  </div>
+                  <div className="sub" style={{marginTop:4, color: linked ? 'var(--accent)' : 'var(--text-3)'}}>
+                    {linked ? `✓ mental連携済 (${linkedUserData ? linkedUserData.name : '?'})` : '◯ mental未連携'}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          {editing && (
+            <RosterEditor
+              initial={editing}
+              onSave={save}
+              onDelete={editing.id ? remove : null}
+              onCancel={() => setEditing(null)}
+            />
+          )}
+
+          <div className="card mt-16">
+            <div className="card-title">運用ガイド</div>
+            <div className="card-subtitle" style={{lineHeight:1.6}}>
+              ・**入学年**を入れると学年は自動計算（4月始まり）<br/>
+              ・「3年生」固定ではなく「2024年入学」のように記録<br/>
+              ・年度切替時に手動更新不要<br/>
+              ・analyzer 表示名 ①②③ は自動生成<br/>
+              ・卒業生は削除でなく「アクティブ無効」推奨（試合データ保持のため）
+            </div>
+          </div>
+        </>
+      );
+    }
+
+    function RosterEditor({ initial, onSave, onCancel, onDelete }) {
+      const today = new Date();
+      const thisYear = today.getMonth() + 1 >= 4 ? today.getFullYear() : today.getFullYear() - 1;
+      const [d, setD] = useState({
+        surname: initial.surname || '',
+        fullName: initial.fullName || '',
+        enrollmentYear: initial.enrollmentYear || (initial.grade ? thisYear - initial.grade + 1 : thisYear),
+        position: initial.position || '',
+        isGK: !!initial.isGK
+      });
+      const currentGrade = computeGrade(Number(d.enrollmentYear));
+      const yearOptions = [];
+      for (let y = thisYear + 1; y >= thisYear - 4; y--) yearOptions.push(y);
+      return (
+        <div className="modal-overlay" onClick={onCancel}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">{initial.id ? '選手編集' : '選手追加'}</div>
+              <button className="modal-close" onClick={onCancel}>×</button>
+            </div>
+            <div className="form-group">
+              <label>苗字 *（analyzer 表示用）</label>
+              <input value={d.surname} onChange={e => setD({...d, surname: e.target.value})} placeholder="赤塚" />
+            </div>
+            <div className="form-group">
+              <label>フルネーム（任意・mental表示用）</label>
+              <input value={d.fullName} onChange={e => setD({...d, fullName: e.target.value})} placeholder="赤塚 太郎" />
+            </div>
+            <div className="form-group">
+              <label>入学年（4月入学ベース）</label>
+              <select value={d.enrollmentYear} onChange={e => setD({...d, enrollmentYear: e.target.value})}>
+                {yearOptions.map(y => <option key={y} value={y}>{y}年入学 → 現{computeGrade(y) > 0 && computeGrade(y) <= 3 ? computeGrade(y) + '年' : computeGrade(y) > 3 ? '卒業' : '入学前'}</option>)}
+              </select>
+              <div className="text-small text-muted mt-16">→ analyzer表示: <strong>{gradeSymbol(currentGrade)}{d.surname || '???'}</strong></div>
+            </div>
+            <div className="form-group">
+              <label>ポジション</label>
+              <select value={d.position} onChange={e => setD({...d, position: e.target.value, isGK: e.target.value === 'GK'})}>
+                <option value="">未設定</option>
+                <option value="GK">GK</option>
+                <option value="LW">LW</option>
+                <option value="RW">RW</option>
+                <option value="LB">LB</option>
+                <option value="CB">CB</option>
+                <option value="RB">RB</option>
+                <option value="PV">PV</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>
+                <input type="checkbox" checked={d.isGK} onChange={e => setD({...d, isGK: e.target.checked})} />
+                {' '}GK（analyzer の GK row に表示）
+              </label>
+            </div>
+            <button className="btn" disabled={!d.surname} onClick={() => onSave(d)}>{initial.id ? '更新' : '追加'}</button>
+            {onDelete && <button className="btn btn-danger mt-16" onClick={onDelete}>削除</button>}
+          </div>
+        </div>
+      );
+    }
+
+    // ====== CSV Import (analyzer出力CSV取込) ======
+    function CsvImport({ roster, rosterToUid, showToast, onBack }) {
+      const [parsed, setParsed] = useState(null); // {headers, rows}
+      const [stats, setStats] = useState(null);    // {matched, unmatched, byPlayer}
+      const [busy, setBusy] = useState(false);
+
+      const onFile = async (file) => {
+        if (!file) return;
+        const text = await file.text();
+        // BOMを除去
+        const clean = text.replace(/^﻿/, '');
+        const lines = clean.split(/\r?\n/).filter(Boolean);
+        if (lines.length < 2) {
+          alert('データ行がありません');
+          return;
+        }
+        const headers = parseCsvLine(lines[0]);
+        const rows = lines.slice(1).map(l => {
+          const cells = parseCsvLine(l);
+          const row = {};
+          headers.forEach((h, i) => row[h] = cells[i] || '');
+          return row;
+        });
+        // analyzer の player列 → rosterId 逆引き
+        const nameToRosterId = {};
+        for (const [rid, r] of Object.entries(roster || {})) {
+          nameToRosterId[rosterDisplayName(r)] = rid;
+        }
+        let matched = 0, unmatched = 0;
+        const byPlayer = {};
+        const unmatchedNames = new Set();
+        rows.forEach(r => {
+          const name = r.player;
+          if (!name) return;
+          const rid = nameToRosterId[name];
+          if (rid) {
+            matched++;
+            byPlayer[name] = (byPlayer[name] || 0) + 1;
+            r._rosterId = rid;
+            r._uid = (rosterToUid || {})[rid];
+          } else {
+            unmatched++;
+            unmatchedNames.add(name);
+            r._rosterId = null;
+            r._uid = null;
+          }
+        });
+        setParsed({ headers, rows });
+        setStats({ matched, unmatched, byPlayer, unmatchedNames: Array.from(unmatchedNames) });
+      };
+
+      const commit = async () => {
+        if (!parsed) return;
+        setBusy(true);
+        try {
+          const gameDate = (parsed.rows[0] && parsed.rows[0].date) || new Date().toISOString().slice(0, 10);
+          const opponent = (parsed.rows[0] && parsed.rows[0].opponent) || 'unknown';
+          const gameId = gameDate + '_' + opponent.replace(/[^a-zA-Z0-9一-龯ぁ-んァ-ヶ]/g, '');
+          let saved = 0;
+          for (let i = 0; i < parsed.rows.length; i++) {
+            const r = parsed.rows[i];
+            if (!r._uid) continue;
+            const row = { ...r };
+            delete row._rosterId;
+            delete row._uid;
+            await storage.saveGameStats(r._uid, gameId, i, row);
+            saved++;
+          }
+          showToast(`${saved}行を保存しました（試合: ${gameId}）`);
+          setParsed(null);
+          setStats(null);
+        } catch (e) {
+          console.error(e);
+          alert('保存中にエラー: ' + e.message);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return (
+        <>
+          <button className="btn-ghost mb-16" onClick={onBack}>← 顧問Dashboardに戻る</button>
+          <div className="section-h">CSV取込（analyzer出力）</div>
+
+          {!parsed && (
+            <>
+              <div className="card">
+                <div className="card-title">使い方</div>
+                <div className="card-subtitle" style={{lineHeight:1.7}}>
+                  1. handball-analyzer で試合データをCSVエクスポート<br/>
+                  2. このページでCSVファイルを選択<br/>
+                  3. プレビュー確認 → 確定<br/>
+                  4. 各選手のアプリに自動配信
+                </div>
+              </div>
+              <div className="card mt-16">
+                <label className="btn" style={{display:'block', textAlign:'center'}}>
+                  📁 CSVファイルを選択
+                  <input type="file" accept=".csv,text/csv" style={{display:'none'}}
+                    onChange={e => onFile(e.target.files[0])} />
+                </label>
+              </div>
+            </>
+          )}
+
+          {parsed && stats && (
+            <>
+              <div className="card">
+                <div className="card-title">プレビュー</div>
+                <div className="summary-stats" style={{marginTop:12}}>
+                  <div className="stat-card"><div className="num">{parsed.rows.length}</div><div className="label">総行数</div></div>
+                  <div className="stat-card"><div className="num" style={{color:'var(--success)'}}>{stats.matched}</div><div className="label">紐付OK</div></div>
+                  <div className="stat-card"><div className="num" style={{color:'var(--warning)'}}>{stats.unmatched}</div><div className="label">未紐付</div></div>
+                </div>
+              </div>
+
+              {stats.unmatched > 0 && (
+                <div className="card mt-16" style={{borderLeft:'3px solid var(--warning)'}}>
+                  <div className="card-title">⚠ 名簿にない選手</div>
+                  <div className="card-subtitle">この選手の行は保存されません。名簿管理で追加してから再実行してください。</div>
+                  <ul style={{marginTop:8}}>
+                    {stats.unmatchedNames.map(n => <li key={n}>{n}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              <div className="section-h mt-16">選手別 行数</div>
+              {Object.entries(stats.byPlayer).map(([name, cnt]) => (
+                <div key={name} className="list-item">
+                  <div>
+                    <div className="title">{name}</div>
+                    <div className="sub">{cnt} 行</div>
+                  </div>
+                </div>
+              ))}
+
+              <div style={{display:'flex', gap:8, marginTop:16}}>
+                <button className="btn btn-secondary" style={{flex:1}} onClick={() => { setParsed(null); setStats(null); }}>キャンセル</button>
+                <button className="btn" style={{flex:1}} disabled={busy || stats.matched === 0} onClick={commit}>{busy ? '保存中...' : `確定（${stats.matched}行）`}</button>
+              </div>
+            </>
+          )}
+        </>
+      );
+    }
+
+    // 簡易CSVパーサ（クォート対応）
+    function parseCsvLine(line) {
+      const result = [];
+      let cur = '';
+      let inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (inQ) {
+          if (c === '"') {
+            if (line[i+1] === '"') { cur += '"'; i++; }
+            else inQ = false;
+          } else cur += c;
+        } else {
+          if (c === '"') inQ = true;
+          else if (c === ',') { result.push(cur); cur = ''; }
+          else cur += c;
+        }
+      }
+      result.push(cur);
+      return result;
     }
 
     // ====== Mount ======
