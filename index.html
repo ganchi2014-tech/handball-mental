@@ -626,6 +626,13 @@
         const handler = ref.on('value', (snap) => callback(snap.val() || {}));
         return () => ref.off('value', handler);
       },
+      // ----- 顧問承認リスト（Console から手動登録） -----
+      subscribeCoaches: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('coaches');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}));
+        return () => ref.off('value', handler);
+      },
       // ----- 名簿マスター（analyzer と共有） -----
       subscribeRoster: (callback) => {
         if (!fbDB) return () => {};
@@ -776,6 +783,7 @@
       const [syncStatus, setSyncStatus] = useState('cache'); // cache/syncing/synced/offline
       const [roster, setRoster] = useState({});         // {rosterId: {...}}
       const [rosterToUid, setRosterToUid] = useState({}); // {rosterId: authUid}
+      const [coaches, setCoaches] = useState({});         // {authUid: true} 顧問承認リスト
       const [myGameStats, setMyGameStats] = useState({}); // 自分のCSV取込済データ
       const [matches, setMatches] = useState({});         // クラウド試合（analyzer保存）
       const [autoImport, setAutoImport] = useState(() => localStorage.getItem('mental_auto_import') === '1');
@@ -783,13 +791,17 @@
       const writeTimerRef = useRef(null);
       const firstCloudLoadRef = useRef(false);
 
-      // ── 名簿マスター購読（常時）
+      // ── 名簿マスター・顧問承認リスト購読（常時）
       useEffect(() => {
         if (!fbDB) return;
         const unsub1 = storage.subscribeRoster(setRoster);
         const unsub2 = storage.subscribeRosterToUid(setRosterToUid);
-        return () => { unsub1(); unsub2(); };
+        const unsub3 = storage.subscribeCoaches(setCoaches);
+        return () => { unsub1(); unsub2(); unsub3(); };
       }, []);
+
+      // 顧問承認済みか（サーバ /coaches に登録されているか）
+      const isApprovedCoach = !!(authUid && coaches[authUid]);
 
       // ── 自分の試合データ（CSV取込済）購読
       useEffect(() => {
@@ -1000,17 +1012,23 @@
               <MyStats state={state} myGameStats={myGameStats} />
             )}
             {view === 'coach' && state.user.isCoach && (
-              <CoachDashboard
-                state={state}
-                allUsersData={allUsersData}
-                roster={roster}
-                rosterToUid={rosterToUid}
-                matches={matches}
-                autoImport={autoImport}
-                onToggleAutoImport={(v) => { setAutoImport(v); localStorage.setItem('mental_auto_import', v ? '1' : '0'); }}
-                importMatch={importMatch}
-                showToast={showToast}
-              />
+              isApprovedCoach ? (
+                <CoachDashboard
+                  state={state}
+                  allUsersData={allUsersData}
+                  roster={roster}
+                  rosterToUid={rosterToUid}
+                  matches={matches}
+                  autoImport={autoImport}
+                  onToggleAutoImport={(v) => { setAutoImport(v); localStorage.setItem('mental_auto_import', v ? '1' : '0'); }}
+                  importMatch={importMatch}
+                  isApprovedCoach={isApprovedCoach}
+                  myUid={authUid}
+                  showToast={showToast}
+                />
+              ) : (
+                <CoachApprovalPending myUid={authUid} showToast={showToast} />
+              )
             )}
           </div>
           <BottomNav view={view} onChange={setView} isCoach={state.user.isCoach} />
@@ -1950,8 +1968,61 @@
       );
     }
 
+    // ====== 顧問承認待ち画面 ======
+    function CoachApprovalPending({ myUid, showToast }) {
+      const copyUid = () => {
+        if (myUid && navigator.clipboard) {
+          navigator.clipboard.writeText(myUid).then(
+            () => showToast('IDをコピーしました'),
+            () => showToast('コピーできませんでした')
+          );
+        }
+      };
+      return (
+        <>
+          <div className="section-h">顧問の承認が必要です</div>
+          <div className="card">
+            <div className="card-title">🔒 まだ承認されていません</div>
+            <div className="card-subtitle" style={{lineHeight:1.7}}>
+              選手の個人データ（メンタル記録・試合統計）は、承認された顧問だけが見られます。<br/>
+              下のあなたのIDを Firebase Console の <code>coaches</code> に登録すると、顧問画面が使えるようになります。
+            </div>
+          </div>
+
+          <div className="card mt-16">
+            <div className="card-title">あなたのID</div>
+            <div style={{
+              background:'rgba(0,0,0,0.4)', border:'1px solid var(--border)', borderRadius:8,
+              padding:'12px', margin:'12px 0', wordBreak:'break-all', fontFamily:'monospace',
+              fontSize:'13px', color:'var(--accent)'
+            }}>
+              {myUid || '(取得中...)'}
+            </div>
+            <button className="btn" onClick={copyUid} disabled={!myUid}>📋 IDをコピー</button>
+          </div>
+
+          <div className="card mt-16">
+            <div className="card-title">登録手順（管理者が一度だけ）</div>
+            <div className="card-subtitle" style={{lineHeight:1.8}}>
+              1. Firebase Console → Realtime Database<br/>
+              2. ルート（一番上）の「＋」をクリック<br/>
+              3. 名前 = <code>coaches</code> を作成<br/>
+              4. その中に 名前 = <strong>上のID</strong>、値 = <code>true</code> を追加<br/>
+              5. このページを再読込
+            </div>
+          </div>
+
+          <div className="card mt-16" style={{borderLeft:'3px solid var(--warning)'}}>
+            <div className="card-subtitle">
+              ⚠ この仕組みにより、選手が誤って顧問モードに入っても他人のデータは見られません。
+            </div>
+          </div>
+        </>
+      );
+    }
+
     // ====== Coach Dashboard (P2: 全選手データを Firebase RTDB から購読) ======
-    function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, autoImport, onToggleAutoImport, importMatch, showToast }) {
+    function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, autoImport, onToggleAutoImport, importMatch, isApprovedCoach, myUid, showToast }) {
       const [selected, setSelected] = useState(null);
       const [tab, setTab] = useState('overview'); // overview / roster / csv / cloud
 
