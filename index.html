@@ -1,0 +1,1854 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0a101e">
+  <link rel="manifest" href="./manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MENTAL">
+  <title>HANDBALL MENTAL</title>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(e => console.warn('SW register failed:', e));
+      });
+    }
+  </script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Firebase SDK v10 (compat mode for browser-side Babel) -->
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js"></script>
+  <script>
+    // ====== Firebase 初期化 ======
+    const firebaseConfig = {
+      apiKey: "AIzaSyC7PV1Q5Fzk-SirYHQR0BBbCU7WiFrMOhQ",
+      authDomain: "handball-mental.firebaseapp.com",
+      databaseURL: "https://handball-mental-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "handball-mental",
+      storageBucket: "handball-mental.firebasestorage.app",
+      messagingSenderId: "155616116061",
+      appId: "1:155616116061:web:1f2bd827637dd445cf3cb4",
+      measurementId: "G-03HGEZKYT7"
+    };
+    try {
+      firebase.initializeApp(firebaseConfig);
+      window.fbAuth = firebase.auth();
+      window.fbDB = firebase.database();
+      window.fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(e => console.warn('[FB persist]', e));
+      window.FIREBASE_READY = true;
+      console.log('[Firebase] initialized OK');
+    } catch (e) {
+      console.error('[Firebase] init failed:', e);
+      window.FIREBASE_READY = false;
+    }
+  </script>
+  <style>
+    :root {
+      --bg: #0a101e;
+      --bg-2: #0f172a;
+      --card: rgba(255,255,255,0.05);
+      --card-hover: rgba(255,255,255,0.08);
+      --border: rgba(255,255,255,0.1);
+      --primary: #ff3b5a;
+      --primary-dark: #c41e3a;
+      --accent: #4ecdc4;
+      --accent-dark: #2c8a82;
+      --warning: #fbbf24;
+      --success: #10b981;
+      --text-1: #f0f4f8;
+      --text-2: #94a3b8;
+      --text-3: #64748b;
+      --shadow: 0 4px 16px rgba(0,0,0,0.3);
+
+      --fs-xs: 11px;
+      --fs-sm: 13px;
+      --fs-md: 15px;
+      --fs-lg: 18px;
+      --fs-xl: 22px;
+      --fs-2xl: 28px;
+      --fs-3xl: 36px;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", "Yu Gothic", "Meiryo", sans-serif;
+      background: linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+      color: var(--text-1);
+      min-height: 100vh;
+      font-size: var(--fs-md);
+      line-height: 1.5;
+    }
+    button { font-family: inherit; cursor: pointer; }
+    input, textarea, select { font-family: inherit; }
+
+    .app {
+      max-width: 480px;
+      margin: 0 auto;
+      min-height: 100vh;
+      padding-bottom: 80px;
+      position: relative;
+    }
+
+    /* Login */
+    .login {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: radial-gradient(circle at 50% 20%, rgba(255,59,90,0.15) 0%, transparent 60%);
+    }
+    .login h1 {
+      font-size: var(--fs-3xl);
+      margin: 0 0 8px;
+      letter-spacing: 1px;
+    }
+    .login .subtitle {
+      color: var(--text-2);
+      margin-bottom: 40px;
+      text-align: center;
+    }
+    .login-card {
+      background: var(--card);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      width: 100%;
+      max-width: 360px;
+      box-shadow: var(--shadow);
+    }
+    .login-card h2 {
+      margin: 0 0 16px;
+      font-size: var(--fs-lg);
+    }
+    .form-group { margin-bottom: 16px; }
+    .form-group label {
+      display: block;
+      font-size: var(--fs-sm);
+      color: var(--text-2);
+      margin-bottom: 6px;
+    }
+    .form-group input, .form-group textarea, .form-group select {
+      width: 100%;
+      padding: 12px 14px;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text-1);
+      font-size: var(--fs-md);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus, .form-group textarea:focus, .form-group select:focus {
+      border-color: var(--primary);
+    }
+    .form-group textarea { resize: vertical; min-height: 80px; }
+    .pin-input {
+      letter-spacing: 8px;
+      text-align: center;
+      font-size: var(--fs-xl) !important;
+    }
+    .btn {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+      border: none;
+      color: white;
+      border-radius: 10px;
+      font-size: var(--fs-md);
+      font-weight: 600;
+      box-shadow: 0 4px 12px rgba(255,59,90,0.3);
+      transition: transform 0.1s, box-shadow 0.2s;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-secondary {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text-1);
+      box-shadow: none;
+    }
+    .btn-ghost {
+      background: transparent;
+      border: none;
+      color: var(--accent);
+      padding: 8px 12px;
+      box-shadow: none;
+      font-size: var(--fs-sm);
+      width: auto;
+    }
+    .btn-danger {
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+    }
+
+    /* Header */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(20px);
+      background: rgba(10,16,30,0.8);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header-name { font-weight: 600; }
+    .header-sub { font-size: var(--fs-xs); color: var(--text-2); }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+    .badge-coach {
+      background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+      color: white;
+      font-size: var(--fs-xs);
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+
+    /* Main content */
+    .content { padding: 16px; }
+    .card {
+      background: var(--card);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow);
+    }
+    .card-title {
+      font-size: var(--fs-md);
+      font-weight: 600;
+      margin: 0 0 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .card-title .icon { font-size: 20px; }
+    .card-subtitle { color: var(--text-2); font-size: var(--fs-sm); margin-bottom: 12px; }
+
+    .stat-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-row .label { color: var(--text-2); }
+    .stat-row .value { font-weight: 600; }
+
+    .greeting { font-size: var(--fs-xl); margin: 0 0 4px; }
+    .greeting-sub { color: var(--text-2); margin-bottom: 24px; }
+
+    /* Quick actions grid */
+    .quick-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .quick-tile {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      text-align: left;
+      color: var(--text-1);
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+    }
+    .quick-tile:active { transform: scale(0.97); background: var(--card-hover); }
+    .quick-tile .tile-icon { font-size: 28px; margin-bottom: 8px; display: block; }
+    .quick-tile .tile-title { font-weight: 600; margin-bottom: 4px; }
+    .quick-tile .tile-sub { font-size: var(--fs-sm); color: var(--text-2); }
+
+    /* Bottom navigation */
+    .nav {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 480px;
+      width: 100%;
+      display: flex;
+      background: rgba(10,16,30,0.95);
+      backdrop-filter: blur(20px);
+      border-top: 1px solid var(--border);
+      padding: 8px 0 calc(8px + env(safe-area-inset-bottom));
+      z-index: 100;
+    }
+    .nav-item {
+      flex: 1;
+      padding: 8px 4px;
+      background: none;
+      border: none;
+      color: var(--text-3);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      font-size: var(--fs-xs);
+    }
+    .nav-item.active { color: var(--primary); }
+    .nav-item .nav-icon { font-size: 22px; }
+
+    /* List items */
+    .list-item {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+    }
+    .list-item:active { background: var(--card-hover); }
+    .list-item .title { font-weight: 600; margin-bottom: 4px; }
+    .list-item .sub { font-size: var(--fs-sm); color: var(--text-2); }
+    .list-item .right { text-align: right; }
+    .list-item .right .score {
+      font-size: var(--fs-xl);
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    /* IZOF chips */
+    .izof-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .izof-cell {
+      padding: 10px 0;
+      text-align: center;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.15s;
+    }
+    .izof-cell.selected {
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      border-color: var(--primary);
+      transform: scale(1.05);
+    }
+    .izof-row { margin-bottom: 12px; }
+    .izof-row .label { font-size: var(--fs-sm); color: var(--text-2); }
+
+    /* Result chips (勝負引) */
+    .chip-group { display: flex; gap: 8px; }
+    .chip {
+      flex: 1;
+      padding: 10px;
+      text-align: center;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .chip.selected { background: var(--primary); border-color: var(--primary); }
+
+    /* Slider score */
+    .score-display {
+      text-align: center;
+      font-size: var(--fs-2xl);
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+    .slider {
+      width: 100%;
+      -webkit-appearance: none;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      outline: none;
+    }
+    .slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 24px;
+      height: 24px;
+      background: var(--primary);
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(255,59,90,0.5);
+    }
+
+    /* 4-week tracker */
+    .week-grid {
+      display: grid;
+      grid-template-columns: 36px repeat(7, 1fr);
+      gap: 4px;
+      margin-top: 8px;
+    }
+    .week-label {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: var(--fs-xs);
+      color: var(--text-2);
+    }
+    .day-cell {
+      aspect-ratio: 1;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: var(--fs-xs);
+      color: var(--text-2);
+      transition: all 0.15s;
+    }
+    .day-cell.checked {
+      background: var(--success);
+      border-color: var(--success);
+      color: white;
+    }
+    .day-cell.today { border-color: var(--primary); border-width: 2px; }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      z-index: 200;
+      padding: 0;
+    }
+    .modal {
+      background: var(--bg-2);
+      width: 100%;
+      max-width: 480px;
+      max-height: 90vh;
+      border-radius: 20px 20px 0 0;
+      padding: 20px;
+      overflow-y: auto;
+      box-shadow: 0 -8px 32px rgba(0,0,0,0.5);
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .modal-title { font-size: var(--fs-lg); font-weight: 600; }
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-2);
+      font-size: 24px;
+      padding: 0;
+      width: 32px;
+      height: 32px;
+    }
+
+    /* Empty state */
+    .empty {
+      text-align: center;
+      padding: 48px 20px;
+      color: var(--text-2);
+    }
+    .empty .empty-icon { font-size: 48px; margin-bottom: 12px; }
+
+    /* Section heading */
+    .section-h {
+      margin: 24px 0 12px;
+      font-size: var(--fs-lg);
+      font-weight: 600;
+    }
+    .section-h .small { font-size: var(--fs-sm); color: var(--text-2); margin-left: 8px; font-weight: 400; }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--success);
+      color: white;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-weight: 600;
+      z-index: 300;
+      animation: toastIn 0.3s ease-out;
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+
+    /* Pull-down etc */
+    .info-row { display: flex; gap: 10px; margin-bottom: 12px; }
+    .info-row > * { flex: 1; }
+
+    .text-muted { color: var(--text-2); }
+    .text-small { font-size: var(--fs-sm); }
+    .mb-8 { margin-bottom: 8px; }
+    .mb-16 { margin-bottom: 16px; }
+    .mt-16 { margin-top: 16px; }
+    .text-center { text-align: center; }
+
+    /* Stats summary */
+    .summary-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      text-align: center;
+    }
+    .stat-card .num {
+      font-size: var(--fs-xl);
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .stat-card .label {
+      font-size: var(--fs-xs);
+      color: var(--text-2);
+      margin-top: 2px;
+    }
+
+    /* Coach mode list */
+    .coach-list-item {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 8px;
+    }
+    .coach-list-item.alert { border-color: var(--warning); }
+
+    .accordion {
+      margin-bottom: 8px;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .accordion-header {
+      padding: 12px;
+      background: var(--card);
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .accordion-body {
+      padding: 12px;
+      background: rgba(0,0,0,0.2);
+      font-size: var(--fs-sm);
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+    // ====== Storage Layer (localStorage キャッシュ + Firebase RTDB クラウド同期) ======
+    const CACHE_KEY = 'handball-mental-v2';
+    const STORAGE_KEY = CACHE_KEY; // 旧名互換
+    const PIN_KEY = 'mental_pin_hash';
+    const NAME_KEY = 'mental_user_name';
+
+    function defaultState() {
+      return {
+        user: null,
+        reflections: [],
+        monthlyReviews: [],
+        izofRecords: [],
+        declarations: [],
+        sessionLogs: []
+      };
+    }
+
+    const fbAuth = (typeof window !== 'undefined') ? window.fbAuth : null;
+    const fbDB   = (typeof window !== 'undefined') ? window.fbDB   : null;
+
+    const storage = {
+      // ----- ローカルキャッシュ（即時、オフライン耐性） -----
+      loadCache: () => {
+        try {
+          // v2優先、なければv1から移行
+          let raw = localStorage.getItem(CACHE_KEY);
+          if (!raw) {
+            const v1 = localStorage.getItem('handball-mental-v1');
+            if (v1) {
+              raw = v1;
+              localStorage.setItem(CACHE_KEY, v1);
+            }
+          }
+          if (!raw) return defaultState();
+          return { ...defaultState(), ...JSON.parse(raw) };
+        } catch {
+          return defaultState();
+        }
+      },
+      saveCache: (state) => {
+        try { localStorage.setItem(CACHE_KEY, JSON.stringify(state)); } catch (e) { console.warn('[cache save]', e); }
+      },
+      // ----- クラウド同期（Firebase RTDB） -----
+      saveCloud: (uid, state) => {
+        if (!fbDB || !uid) return Promise.resolve();
+        return fbDB.ref('users/' + uid + '/state').set(state)
+          .catch(e => { console.warn('[RTDB save]', e); throw e; });
+      },
+      subscribeCloud: (uid, callback) => {
+        if (!fbDB || !uid) return () => {};
+        const ref = fbDB.ref('users/' + uid + '/state');
+        const handler = ref.on('value', (snap) => callback(snap.val()));
+        return () => ref.off('value', handler);
+      },
+      // ----- 顧問用: 全選手データ -----
+      subscribeAllUsers: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('users');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}));
+        return () => ref.off('value', handler);
+      }
+    };
+
+    // 旧APIを維持（既存呼び出しのため）
+    storage.load = storage.loadCache;
+    storage.save = storage.saveCache;
+
+    // ====== Hash for PIN (simple, not cryptographic but ok for v1) ======
+    function hashPin(pin) {
+      let h = 0;
+      const s = String(pin) + '|handball-mental|salt';
+      for (let i = 0; i < s.length; i++) {
+        h = ((h << 5) - h) + s.charCodeAt(i);
+        h |= 0;
+      }
+      return String(h);
+    }
+
+    // ====== Helpers ======
+    const uid = () => Math.random().toString(36).slice(2, 11) + Date.now().toString(36);
+    const todayStr = () => new Date().toISOString().slice(0, 10);
+    const fmtDate = (s) => {
+      if (!s) return '';
+      const [y,m,d] = s.split('-');
+      return `${m}/${d}`;
+    };
+
+    // ====== App ======
+    function App() {
+      const [state, setState] = useState(() => storage.loadCache());
+      const [view, setView] = useState('home');
+      const [toast, setToast] = useState(null);
+      const [authUid, setAuthUid] = useState(null);
+      const [authReady, setAuthReady] = useState(false);
+      const [allUsersData, setAllUsersData] = useState({});
+      const [syncStatus, setSyncStatus] = useState('cache'); // cache/syncing/synced/offline
+      const lastCloudJsonRef = useRef('');
+      const writeTimerRef = useRef(null);
+      const firstCloudLoadRef = useRef(false);
+
+      // ── Firebase 認証状態監視
+      useEffect(() => {
+        if (!fbAuth) {
+          setAuthReady(true);
+          setSyncStatus('offline');
+          return;
+        }
+        const unsub = fbAuth.onAuthStateChanged((user) => {
+          setAuthUid(user ? user.uid : null);
+          setAuthReady(true);
+        });
+        return unsub;
+      }, []);
+
+      // ── クラウドからのリアルタイム同期（自分のデータ）
+      useEffect(() => {
+        if (!authUid || !state.user) return;
+        setSyncStatus('syncing');
+        firstCloudLoadRef.current = false;
+        const unsub = storage.subscribeCloud(authUid, (cloudState) => {
+          if (cloudState) {
+            const json = JSON.stringify(cloudState);
+            if (json === lastCloudJsonRef.current) {
+              setSyncStatus('synced');
+              return;
+            }
+            lastCloudJsonRef.current = json;
+            setState(prev => ({ ...prev, ...cloudState }));
+            setSyncStatus('synced');
+          } else {
+            // クラウドに無い → 初回アップロード
+            const json = JSON.stringify(state);
+            lastCloudJsonRef.current = json;
+            storage.saveCloud(authUid, state).then(() => setSyncStatus('synced'));
+          }
+          firstCloudLoadRef.current = true;
+        });
+        return unsub;
+      }, [authUid, state.user && state.user.id]);
+
+      // ── 顧問モード: 全選手データ購読
+      useEffect(() => {
+        if (!authUid || !state.user || !state.user.isCoach) {
+          setAllUsersData({});
+          return;
+        }
+        const unsub = storage.subscribeAllUsers(setAllUsersData);
+        return unsub;
+      }, [authUid, state.user && state.user.isCoach]);
+
+      // ── 永続化: localStorage 即時 + RTDB デバウンス（500ms）
+      useEffect(() => {
+        storage.saveCache(state);
+        if (!authUid || !state.user) return;
+        const json = JSON.stringify(state);
+        if (json === lastCloudJsonRef.current) return; // クラウドから来たデータは送り返さない
+        if (writeTimerRef.current) clearTimeout(writeTimerRef.current);
+        setSyncStatus('syncing');
+        writeTimerRef.current = setTimeout(() => {
+          lastCloudJsonRef.current = json;
+          storage.saveCloud(authUid, state)
+            .then(() => setSyncStatus('synced'))
+            .catch(() => setSyncStatus('offline'));
+        }, 500);
+      }, [state, authUid]);
+
+      const showToast = (msg) => {
+        setToast(msg);
+        setTimeout(() => setToast(null), 2500);
+      };
+
+      // 認証準備中
+      if (!authReady) {
+        return (
+          <div className="login">
+            <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
+            <p className="subtitle">接続中...</p>
+          </div>
+        );
+      }
+
+      // ログイン画面（プロフィール未設定 or Firebase認証なし）
+      if (!state.user) {
+        return (
+          <>
+            <Login onLogin={async (userInput) => {
+              try {
+                let uid = authUid;
+                if (!uid && fbAuth) {
+                  const cred = await fbAuth.signInAnonymously();
+                  uid = cred.user.uid;
+                }
+                const finalUser = {
+                  ...userInput,
+                  id: uid || userInput.id, // Firebase uid を採用（失敗時はローカルid）
+                };
+                setState(prev => ({ ...prev, user: finalUser }));
+              } catch (e) {
+                console.error('[Login] auth failed:', e);
+                alert('オンライン接続に失敗しました。インターネット接続を確認してください。\n' + e.message);
+              }
+            }} />
+            {toast && <div className="toast">{toast}</div>}
+          </>
+        );
+      }
+
+      const update = (patch) => setState(prev => ({ ...prev, ...patch }));
+      const handleLogout = async () => {
+        try { if (fbAuth) await fbAuth.signOut(); } catch (e) { console.warn(e); }
+        localStorage.removeItem(PIN_KEY);
+        localStorage.removeItem(NAME_KEY);
+        localStorage.removeItem(CACHE_KEY);
+        lastCloudJsonRef.current = '';
+        setState(defaultState());
+      };
+
+      return (
+        <div className="app">
+          <Header
+            user={state.user}
+            syncStatus={syncStatus}
+            onLogout={handleLogout}
+            onCoachToggle={() => update({ user: { ...state.user, isCoach: !state.user.isCoach } })}
+          />
+          <div className="content">
+            {view === 'home' && <Home state={state} onNav={setView} />}
+            {view === 'reflection' && (
+              <Reflections
+                state={state}
+                update={update}
+                showToast={showToast}
+              />
+            )}
+            {view === 'izof' && (
+              <Izof state={state} update={update} showToast={showToast} />
+            )}
+            {view === 'declaration' && (
+              <Declarations state={state} update={update} showToast={showToast} />
+            )}
+            {view === 'monthly' && (
+              <Monthly state={state} update={update} showToast={showToast} />
+            )}
+            {view === 'coach' && state.user.isCoach && (
+              <CoachDashboard state={state} allUsersData={allUsersData} />
+            )}
+          </div>
+          <BottomNav view={view} onChange={setView} isCoach={state.user.isCoach} />
+          {toast && <div className="toast">{toast}</div>}
+        </div>
+      );
+    }
+
+    // ====== Login ======
+    function Login({ onLogin }) {
+      const [mode, setMode] = useState('login'); // or 'register'
+      const [name, setName] = useState('');
+      const [grade, setGrade] = useState('2');
+      const [position, setPosition] = useState('CB');
+      const [pin, setPin] = useState('');
+      const [savedPin, setSavedPin] = useState(localStorage.getItem(PIN_KEY) || '');
+      const [savedName, setSavedName] = useState(localStorage.getItem(NAME_KEY) || '');
+      const [busy, setBusy] = useState(false);
+
+      const handleRegister = async () => {
+        if (!name || !pin || pin.length !== 4) {
+          alert('名前と4桁PINを入力してください');
+          return;
+        }
+        setBusy(true);
+        const hash = hashPin(pin);
+        localStorage.setItem(PIN_KEY, hash);
+        localStorage.setItem(NAME_KEY, name);
+        const user = {
+          id: uid(), // 暫定id（onLogin内でFirebase uidに置換される）
+          name,
+          grade: Number(grade),
+          position,
+          createdAt: Date.now(),
+          isCoach: false
+        };
+        try { await onLogin(user); } finally { setBusy(false); }
+      };
+
+      const handleLogin = async () => {
+        if (hashPin(pin) !== savedPin) {
+          alert('PINが違います');
+          return;
+        }
+        setBusy(true);
+        const saved = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+        const user = (saved && saved.user) ? saved.user : { id: uid(), name: savedName, grade: 2, position: 'CB', createdAt: Date.now(), isCoach: false };
+        try { await onLogin(user); } finally { setBusy(false); }
+      };
+
+      const handleReset = () => {
+        if (!confirm('この端末の全データを削除して最初からやり直しますか？\n（クラウド側のデータは残ります）')) return;
+        localStorage.removeItem(CACHE_KEY);
+        localStorage.removeItem(PIN_KEY);
+        localStorage.removeItem(NAME_KEY);
+        location.reload();
+      };
+
+      if (savedPin && mode === 'login') {
+        return (
+          <div className="login">
+            <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
+            <p className="subtitle">{savedName} さん、お帰りなさい</p>
+            <div className="login-card">
+              <h2>PIN を入力</h2>
+              <div className="form-group">
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength="4"
+                  className="pin-input"
+                  value={pin}
+                  onChange={e => setPin(e.target.value.replace(/[^0-9]/g, ''))}
+                  placeholder="••••"
+                />
+              </div>
+              <button className="btn" disabled={busy} onClick={handleLogin}>{busy ? '接続中...' : 'ログイン'}</button>
+              <div style={{marginTop:12, textAlign:'center'}}>
+                <button className="btn-ghost" onClick={handleReset}>データを削除して初期化</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="login">
+          <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
+          <p className="subtitle">男子ハンドボール部 メンタル指導</p>
+          <div className="login-card">
+            <h2>初回設定</h2>
+            <div className="form-group">
+              <label>名前</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="山田太郎" />
+            </div>
+            <div className="form-group">
+              <label>学年</label>
+              <select value={grade} onChange={e => setGrade(e.target.value)}>
+                <option value="1">1年</option>
+                <option value="2">2年</option>
+                <option value="3">3年</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>ポジション</label>
+              <select value={position} onChange={e => setPosition(e.target.value)}>
+                <option value="GK">GK</option>
+                <option value="LW">LW（左サイド）</option>
+                <option value="RW">RW（右サイド）</option>
+                <option value="LB">LB（左バック）</option>
+                <option value="CB">CB（センターバック）</option>
+                <option value="RB">RB（右バック）</option>
+                <option value="PV">PV（ピボット）</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>4桁PIN（次回からこれでログイン）</label>
+              <input
+                type="password"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength="4"
+                className="pin-input"
+                value={pin}
+                onChange={e => setPin(e.target.value.replace(/[^0-9]/g,''))}
+                placeholder="••••"
+              />
+            </div>
+            <button className="btn" disabled={busy} onClick={handleRegister}>{busy ? '接続中...' : '登録して開始'}</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ====== Header ======
+    function Header({ user, syncStatus, onLogout, onCoachToggle }) {
+      const [menuOpen, setMenuOpen] = useState(false);
+      const syncDot = {
+        cache:   { color: '#94a3b8', title: 'ローカルのみ' },
+        syncing: { color: '#fbbf24', title: 'クラウド同期中...' },
+        synced:  { color: '#10b981', title: 'クラウド同期済' },
+        offline: { color: '#ef4444', title: 'オフライン' }
+      }[syncStatus || 'cache'];
+      return (
+        <div className="header">
+          <div>
+            <div className="header-name">
+              {user.name}
+              {user.isCoach && <span className="badge-coach" style={{marginLeft:8}}>顧問</span>}
+              <span
+                title={syncDot.title}
+                style={{
+                  display:'inline-block', width:8, height:8, borderRadius:4,
+                  background: syncDot.color, marginLeft:10, verticalAlign:'middle',
+                  boxShadow: syncStatus==='syncing' ? '0 0 6px '+syncDot.color : 'none',
+                  animation: syncStatus==='syncing' ? 'pulse 1s infinite' : 'none'
+                }}
+              />
+            </div>
+            <div className="header-sub">
+              {user.grade}年 / {user.position}
+            </div>
+          </div>
+          <div className="header-actions">
+            <button className="btn-ghost" onClick={() => setMenuOpen(!menuOpen)}>⋯</button>
+            {menuOpen && (
+              <div style={{position:'absolute', top:60, right:16, background:'var(--bg-2)', border:'1px solid var(--border)', borderRadius:10, padding:8, zIndex:50}}>
+                <button className="btn-ghost" style={{display:'block', width:'100%', textAlign:'left'}} onClick={() => { onCoachToggle(); setMenuOpen(false); }}>
+                  {user.isCoach ? '選手モードに戻る' : '顧問モードに切替'}
+                </button>
+                <button className="btn-ghost" style={{display:'block', width:'100%', textAlign:'left'}} onClick={() => { setMenuOpen(false); if(confirm('ログアウトしますか？')) onLogout(); }}>
+                  ログアウト
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ====== Bottom Nav ======
+    function BottomNav({ view, onChange, isCoach }) {
+      const items = [
+        { id: 'home', icon: '🏠', label: 'ホーム' },
+        { id: 'reflection', icon: '📝', label: '振り返り' },
+        { id: 'izof', icon: '🎯', label: 'IZOF' },
+        { id: 'declaration', icon: '✅', label: '宣言' },
+        { id: 'monthly', icon: '📊', label: '月評価' }
+      ];
+      if (isCoach) {
+        items.push({ id: 'coach', icon: '👥', label: '顧問' });
+      }
+      return (
+        <div className="nav">
+          {items.map(it => (
+            <button
+              key={it.id}
+              className={'nav-item ' + (view === it.id ? 'active' : '')}
+              onClick={() => onChange(it.id)}
+            >
+              <div className="nav-icon">{it.icon}</div>
+              <div>{it.label}</div>
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    // ====== Home ======
+    function Home({ state, onNav }) {
+      const today = new Date();
+      const hour = today.getHours();
+      const greeting = hour < 11 ? 'おはよう' : hour < 18 ? 'こんにちは' : 'お疲れ様';
+      const recentReflection = state.reflections[0];
+      const activeDecl = state.declarations.find(d => !d.completed);
+      const declCheckedDays = activeDecl ? (activeDecl.checks || []).length : 0;
+
+      return (
+        <>
+          <h2 className="greeting">{greeting}、{state.user.name}</h2>
+          <p className="greeting-sub">{today.getMonth()+1}月{today.getDate()}日 ({['日','月','火','水','木','金','土'][today.getDay()]})</p>
+
+          <div className="summary-stats">
+            <div className="stat-card">
+              <div className="num">{state.reflections.length}</div>
+              <div className="label">試合振り返り</div>
+            </div>
+            <div className="stat-card">
+              <div className="num">{declCheckedDays}</div>
+              <div className="label">宣言の継続日</div>
+            </div>
+            <div className="stat-card">
+              <div className="num">{state.izofRecords.length}</div>
+              <div className="label">IZOF記録</div>
+            </div>
+          </div>
+
+          <div className="section-h">クイックアクション</div>
+          <div className="quick-grid">
+            <button className="quick-tile" onClick={() => onNav('reflection')}>
+              <span className="tile-icon">📝</span>
+              <div className="tile-title">試合振り返り</div>
+              <div className="tile-sub">試合後すぐ書く</div>
+            </button>
+            <button className="quick-tile" onClick={() => onNav('izof')}>
+              <span className="tile-icon">🎯</span>
+              <div className="tile-title">IZOF記録</div>
+              <div className="tile-sub">今の状態を残す</div>
+            </button>
+            <button className="quick-tile" onClick={() => onNav('declaration')}>
+              <span className="tile-icon">✅</span>
+              <div className="tile-title">行動宣言</div>
+              <div className="tile-sub">今日できたかチェック</div>
+            </button>
+            <button className="quick-tile" onClick={() => onNav('monthly')}>
+              <span className="tile-icon">📊</span>
+              <div className="tile-title">月の振り返り</div>
+              <div className="tile-sub">月末に書く</div>
+            </button>
+          </div>
+
+          {recentReflection && (
+            <>
+              <div className="section-h">直近の振り返り</div>
+              <div className="list-item" onClick={() => onNav('reflection')}>
+                <div>
+                  <div className="title">vs {recentReflection.opponent}</div>
+                  <div className="sub">{recentReflection.gameDate} ({recentReflection.result})</div>
+                </div>
+                <div className="right">
+                  <div className="score">{recentReflection.selfScore}</div>
+                  <div className="sub">/10</div>
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      );
+    }
+
+    // ====== Reflections ======
+    function Reflections({ state, update, showToast }) {
+      const [editing, setEditing] = useState(null);
+      const reflections = state.reflections;
+
+      const save = (data) => {
+        let list;
+        if (editing && editing.id) {
+          list = reflections.map(r => r.id === editing.id ? { ...editing, ...data } : r);
+        } else {
+          list = [{ id: uid(), createdAt: Date.now(), ...data }, ...reflections];
+        }
+        update({ reflections: list });
+        setEditing(null);
+        showToast(editing && editing.id ? '更新しました' : '保存しました');
+      };
+
+      const del = (id) => {
+        if (!confirm('削除しますか？')) return;
+        update({ reflections: reflections.filter(r => r.id !== id) });
+        setEditing(null);
+        showToast('削除しました');
+      };
+
+      return (
+        <>
+          <div className="section-h">試合振り返り <span className="small">{reflections.length}件</span></div>
+          <button className="btn mb-16" onClick={() => setEditing({})}>+ 新規振り返り</button>
+
+          {reflections.length === 0 && (
+            <div className="empty">
+              <div className="empty-icon">📝</div>
+              <div>まだ振り返りがありません</div>
+              <div className="text-small">試合後にここに記録しよう</div>
+            </div>
+          )}
+
+          {reflections.map(r => (
+            <div key={r.id} className="list-item" onClick={() => setEditing(r)}>
+              <div>
+                <div className="title">vs {r.opponent || '(相手未入力)'}</div>
+                <div className="sub">{r.gameDate} · 結果 {r.result || '?'}</div>
+                {r.mentalFinding && <div className="sub" style={{marginTop:4, color:'var(--text-2)'}}>💭 {r.mentalFinding.slice(0,40)}{r.mentalFinding.length>40?'…':''}</div>}
+              </div>
+              <div className="right">
+                <div className="score">{r.selfScore}</div>
+                <div className="sub">/10</div>
+              </div>
+            </div>
+          ))}
+
+          {editing && (
+            <ReflectionEditor
+              initial={editing}
+              onSave={save}
+              onCancel={() => setEditing(null)}
+              onDelete={editing.id ? () => del(editing.id) : null}
+            />
+          )}
+        </>
+      );
+    }
+
+    function ReflectionEditor({ initial, onSave, onCancel, onDelete }) {
+      const [d, setD] = useState({
+        gameDate: initial.gameDate || todayStr(),
+        opponent: initial.opponent || '',
+        result: initial.result || '',
+        selfScore: initial.selfScore || 5,
+        bestPlay: initial.bestPlay || '',
+        improvePlay: initial.improvePlay || '',
+        mentalFinding: initial.mentalFinding || '',
+        nextTask: initial.nextTask || '',
+        coachWord: initial.coachWord || '',
+        preGameIzof: initial.preGameIzof || { tension: 3, focus: 3, confidence: 3, condition: 3 }
+      });
+      const setIzof = (k, v) => setD({ ...d, preGameIzof: { ...d.preGameIzof, [k]: v }});
+
+      return (
+        <div className="modal-overlay" onClick={onCancel}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">{initial.id ? '振り返り編集' : '新規振り返り'}</div>
+              <button className="modal-close" onClick={onCancel}>×</button>
+            </div>
+
+            <div className="form-group">
+              <label>試合日</label>
+              <input type="date" value={d.gameDate} onChange={e => setD({...d, gameDate: e.target.value})} />
+            </div>
+            <div className="form-group">
+              <label>相手</label>
+              <input value={d.opponent} onChange={e => setD({...d, opponent: e.target.value})} placeholder="○○高校" />
+            </div>
+            <div className="form-group">
+              <label>結果</label>
+              <div className="chip-group">
+                {['勝','負','引'].map(r => (
+                  <div key={r} className={'chip ' + (d.result === r ? 'selected' : '')} onClick={() => setD({...d, result: r})}>{r}</div>
+                ))}
+              </div>
+            </div>
+            <div className="form-group">
+              <label>今日の自分の調子: {d.selfScore} / 10</label>
+              <div className="score-display">{d.selfScore}</div>
+              <input type="range" min="1" max="10" value={d.selfScore} className="slider" onChange={e => setD({...d, selfScore: Number(e.target.value)})} />
+            </div>
+            <div className="form-group">
+              <label>ベストプレー1つ</label>
+              <textarea value={d.bestPlay} onChange={e => setD({...d, bestPlay: e.target.value})} placeholder="どんなプレーが良かったか" />
+            </div>
+            <div className="form-group">
+              <label>改善したいプレー1つ</label>
+              <textarea value={d.improvePlay} onChange={e => setD({...d, improvePlay: e.target.value})} placeholder="何を直したいか" />
+            </div>
+            <div className="form-group">
+              <label>メンタル面での発見</label>
+              <textarea value={d.mentalFinding} onChange={e => setD({...d, mentalFinding: e.target.value})} placeholder="緊張・集中・自信について気づいたこと" />
+            </div>
+            <div className="form-group">
+              <label>次回への課題</label>
+              <textarea value={d.nextTask} onChange={e => setD({...d, nextTask: e.target.value})} placeholder="次の試合までに直す1つ" />
+            </div>
+            <div className="form-group">
+              <label>監督の言葉で印象に残ったもの</label>
+              <textarea value={d.coachWord} onChange={e => setD({...d, coachWord: e.target.value})} placeholder="心に残った一言" />
+            </div>
+
+            <div className="form-group">
+              <label>試合前のIZOF（1=最低 〜 5=最高）</label>
+              {[
+                {k:'tension', name:'緊張度'},
+                {k:'focus', name:'集中度'},
+                {k:'confidence', name:'自信'},
+                {k:'condition', name:'体調'}
+              ].map(item => (
+                <div key={item.k} className="izof-row">
+                  <div className="label">{item.name}</div>
+                  <div className="izof-grid">
+                    {[1,2,3,4,5].map(n => (
+                      <div
+                        key={n}
+                        className={'izof-cell ' + (d.preGameIzof[item.k] === n ? 'selected' : '')}
+                        onClick={() => setIzof(item.k, n)}
+                      >{n}</div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button className="btn" onClick={() => onSave(d)}>{initial.id ? '更新' : '保存'}</button>
+            {onDelete && <button className="btn btn-danger mt-16" onClick={onDelete}>削除</button>}
+          </div>
+        </div>
+      );
+    }
+
+    // ====== IZOF ======
+    function Izof({ state, update, showToast }) {
+      const [adding, setAdding] = useState(false);
+      const [izofType, setIzofType] = useState(state.user.izofType || '');
+
+      const save = (record) => {
+        update({
+          izofRecords: [{id: uid(), createdAt: Date.now(), ...record}, ...state.izofRecords],
+          user: { ...state.user, izofType: izofType || state.user.izofType }
+        });
+        setAdding(false);
+        showToast('保存しました');
+      };
+
+      return (
+        <>
+          <div className="section-h">IZOF（自分の最適ゾーン）</div>
+
+          <div className="card">
+            <div className="card-title">自分のIZOF型</div>
+            <div className="card-subtitle">Session 1 で発見した型</div>
+            <div className="chip-group">
+              {['低覚醒型','中庸型','高覚醒型'].map(t => (
+                <div key={t}
+                  className={'chip ' + (izofType === t ? 'selected' : '')}
+                  onClick={() => { setIzofType(t); update({user: {...state.user, izofType: t}}); showToast('IZOF型を保存'); }}
+                >{t}</div>
+              ))}
+            </div>
+            <div className="text-small text-muted mt-16">
+              {izofType === '低覚醒型' && '→ リラックスでベスト。深呼吸・静かな音楽が合う'}
+              {izofType === '中庸型' && '→ ほどよい緊張でベスト。軽い声出し・ストレッチ'}
+              {izofType === '高覚醒型' && '→ 興奮状態でベスト。アップビート・ハイタッチ'}
+            </div>
+          </div>
+
+          <button className="btn mb-16" onClick={() => setAdding(true)}>+ 今の状態を記録</button>
+
+          <div className="section-h">記録履歴 <span className="small">{state.izofRecords.length}件</span></div>
+          {state.izofRecords.length === 0 && (
+            <div className="empty">
+              <div className="empty-icon">🎯</div>
+              <div>まだ記録がありません</div>
+            </div>
+          )}
+          {state.izofRecords.map(r => (
+            <div key={r.id} className="list-item">
+              <div>
+                <div className="title">{r.date} {r.context ? `(${r.context})` : ''}</div>
+                <div className="sub">緊張:{r.tension} 集中:{r.focus} 自信:{r.confidence} 体調:{r.condition}</div>
+              </div>
+            </div>
+          ))}
+
+          {adding && (
+            <IzofEditor onSave={save} onCancel={() => setAdding(false)} />
+          )}
+        </>
+      );
+    }
+
+    function IzofEditor({ onSave, onCancel }) {
+      const [d, setD] = useState({
+        date: todayStr(),
+        context: '',
+        tension: 3, focus: 3, confidence: 3, condition: 3
+      });
+      const set = (k,v) => setD({...d, [k]:v});
+
+      return (
+        <div className="modal-overlay" onClick={onCancel}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">IZOF記録</div>
+              <button className="modal-close" onClick={onCancel}>×</button>
+            </div>
+            <div className="form-group">
+              <label>日付</label>
+              <input type="date" value={d.date} onChange={e => set('date', e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label>シーン（任意）</label>
+              <input value={d.context} onChange={e => set('context', e.target.value)} placeholder="試合前 / 練習後 など" />
+            </div>
+            {[
+              {k:'tension', name:'緊張度'},
+              {k:'focus', name:'集中度'},
+              {k:'confidence', name:'自信'},
+              {k:'condition', name:'体調'}
+            ].map(item => (
+              <div key={item.k} className="izof-row">
+                <div className="label">{item.name}</div>
+                <div className="izof-grid">
+                  {[1,2,3,4,5].map(n => (
+                    <div key={n}
+                      className={'izof-cell ' + (d[item.k] === n ? 'selected' : '')}
+                      onClick={() => set(item.k, n)}
+                    >{n}</div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <button className="btn" onClick={() => onSave(d)}>保存</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ====== Declarations ======
+    function Declarations({ state, update, showToast }) {
+      const [adding, setAdding] = useState(false);
+      const active = state.declarations.find(d => !d.completed);
+      const history = state.declarations.filter(d => d.completed);
+
+      const start = (text) => {
+        const decl = {
+          id: uid(),
+          declaration: text,
+          startDate: todayStr(),
+          checks: [],
+          completed: false,
+          createdAt: Date.now()
+        };
+        update({ declarations: [decl, ...state.declarations] });
+        setAdding(false);
+        showToast('行動宣言を開始！');
+      };
+
+      const toggleDay = (date) => {
+        if (!active) return;
+        const checks = active.checks || [];
+        const next = checks.includes(date) ? checks.filter(c => c !== date) : [...checks, date];
+        update({
+          declarations: state.declarations.map(d => d.id === active.id ? {...d, checks: next} : d)
+        });
+      };
+
+      const complete = () => {
+        if (!active) return;
+        if (!confirm('この行動宣言を完了として閉じますか？')) return;
+        update({
+          declarations: state.declarations.map(d => d.id === active.id ? {...d, completed: true, completedAt: Date.now()} : d)
+        });
+        showToast('完了！');
+      };
+
+      return (
+        <>
+          <div className="section-h">行動宣言</div>
+
+          {active ? (
+            <DeclarationActive d={active} onToggle={toggleDay} onComplete={complete} />
+          ) : (
+            <div className="card">
+              <div className="card-title">進行中の宣言なし</div>
+              <button className="btn mt-16" onClick={() => setAdding(true)}>+ 行動宣言を始める</button>
+            </div>
+          )}
+
+          {history.length > 0 && (
+            <>
+              <div className="section-h">過去の宣言</div>
+              {history.map(d => (
+                <div key={d.id} className="list-item">
+                  <div>
+                    <div className="title">{d.declaration}</div>
+                    <div className="sub">{d.startDate} 〜 {(d.checks||[]).length}日達成</div>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {adding && (
+            <DeclarationEditor onSave={start} onCancel={() => setAdding(false)} />
+          )}
+        </>
+      );
+    }
+
+    function DeclarationActive({ d, onToggle, onComplete }) {
+      const start = new Date(d.startDate + 'T00:00:00');
+      const today = todayStr();
+      const checks = d.checks || [];
+
+      // build 4 weeks of dates starting from start
+      const weeks = [];
+      for (let w = 0; w < 4; w++) {
+        const days = [];
+        for (let dd = 0; dd < 7; dd++) {
+          const dt = new Date(start);
+          dt.setDate(start.getDate() + w*7 + dd);
+          const ds = dt.toISOString().slice(0,10);
+          days.push(ds);
+        }
+        weeks.push(days);
+      }
+      const totalChecked = checks.length;
+
+      return (
+        <div className="card">
+          <div className="card-title">
+            <div>進行中：{d.declaration}</div>
+          </div>
+          <div className="card-subtitle">開始: {d.startDate} ／ 達成 {totalChecked} / 28日</div>
+          <div className="week-grid">
+            <div className="week-label"></div>
+            {['月','火','水','木','金','土','日'].map(w => <div key={w} className="week-label">{w}</div>)}
+            {weeks.map((days, wi) => (
+              <React.Fragment key={wi}>
+                <div className="week-label">第{wi+1}週</div>
+                {days.map(ds => {
+                  const checked = checks.includes(ds);
+                  const isToday = ds === today;
+                  return (
+                    <div
+                      key={ds}
+                      className={'day-cell ' + (checked ? 'checked' : '') + (isToday ? ' today' : '')}
+                      onClick={() => onToggle(ds)}
+                      title={ds}
+                    >
+                      {checked ? '✓' : new Date(ds).getDate()}
+                    </div>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+          </div>
+          <button className="btn btn-secondary mt-16" onClick={onComplete}>この宣言を完了する</button>
+        </div>
+      );
+    }
+
+    function DeclarationEditor({ onSave, onCancel }) {
+      const [text, setText] = useState('');
+      const examples = [
+        '寝る前10分のイメージトレーニング',
+        '合言葉を毎練習で発声',
+        '呼吸法を毎晩寝る前に',
+        'ミスした仲間に最初の5秒でドンマイ',
+        'マイナスの口グセを1つ封印'
+      ];
+      return (
+        <div className="modal-overlay" onClick={onCancel}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">行動宣言</div>
+              <button className="modal-close" onClick={onCancel}>×</button>
+            </div>
+            <div className="form-group">
+              <label>今日から続ける1つ</label>
+              <textarea value={text} onChange={e => setText(e.target.value)} placeholder="自分の1つ" />
+            </div>
+            <div className="form-group">
+              <label className="text-small">例（タップで入力）</label>
+              {examples.map(ex => (
+                <div key={ex}
+                  style={{padding:8, margin:'4px 0', background:'rgba(0,0,0,0.3)', borderRadius:8, cursor:'pointer'}}
+                  onClick={() => setText(ex)}
+                >{ex}</div>
+              ))}
+            </div>
+            <button className="btn" disabled={!text} onClick={() => onSave(text)}>開始する</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ====== Monthly ======
+    function Monthly({ state, update, showToast }) {
+      const [editing, setEditing] = useState(null);
+
+      const save = (data) => {
+        let list;
+        if (editing && editing.id) {
+          list = state.monthlyReviews.map(r => r.id === editing.id ? { ...editing, ...data } : r);
+        } else {
+          list = [{ id: uid(), createdAt: Date.now(), ...data }, ...state.monthlyReviews];
+        }
+        update({ monthlyReviews: list });
+        setEditing(null);
+        showToast('保存しました');
+      };
+
+      return (
+        <>
+          <div className="section-h">月1自己評価</div>
+          <button className="btn mb-16" onClick={() => setEditing({})}>+ 今月の振り返りを書く</button>
+
+          {state.monthlyReviews.length === 0 && (
+            <div className="empty">
+              <div className="empty-icon">📊</div>
+              <div>まだ記録がありません</div>
+            </div>
+          )}
+          {state.monthlyReviews.map(r => (
+            <div key={r.id} className="list-item" onClick={() => setEditing(r)}>
+              <div>
+                <div className="title">{r.yearMonth}</div>
+                <div className="sub">{r.mentalState} ／ 練習意欲 {r.practiceMotivation}/10</div>
+                {r.consultRequest && <div className="sub" style={{color:'var(--warning)'}}>⚠ 顧問へ相談希望</div>}
+              </div>
+            </div>
+          ))}
+
+          {editing && (
+            <MonthlyEditor initial={editing} onSave={save} onCancel={() => setEditing(null)} />
+          )}
+        </>
+      );
+    }
+
+    function MonthlyEditor({ initial, onSave, onCancel }) {
+      const ym = initial.yearMonth || new Date().toISOString().slice(0,7);
+      const [d, setD] = useState({
+        yearMonth: ym,
+        practiceMotivation: initial.practiceMotivation || 7,
+        gameStateScore: initial.gameStateScore || 5,
+        mentalState: initial.mentalState || '普通',
+        achievements: initial.achievements || ['','',''],
+        difficulties: initial.difficulties || '',
+        nextMonthGoal: initial.nextMonthGoal || '',
+        consultRequest: initial.consultRequest || false,
+        consultDetails: initial.consultDetails || ''
+      });
+      const setA = (i, v) => {
+        const a = [...d.achievements];
+        a[i] = v;
+        setD({...d, achievements: a});
+      };
+      return (
+        <div className="modal-overlay" onClick={onCancel}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">月1自己評価</div>
+              <button className="modal-close" onClick={onCancel}>×</button>
+            </div>
+            <div className="form-group">
+              <label>年月</label>
+              <input type="month" value={d.yearMonth} onChange={e => setD({...d, yearMonth: e.target.value})} />
+            </div>
+            <div className="form-group">
+              <label>練習意欲: {d.practiceMotivation}/10</label>
+              <input type="range" min="1" max="10" value={d.practiceMotivation} className="slider" onChange={e => setD({...d, practiceMotivation: Number(e.target.value)})} />
+            </div>
+            <div className="form-group">
+              <label>試合結果への満足度: {d.gameStateScore}/10</label>
+              <input type="range" min="1" max="10" value={d.gameStateScore} className="slider" onChange={e => setD({...d, gameStateScore: Number(e.target.value)})} />
+            </div>
+            <div className="form-group">
+              <label>メンタル状態</label>
+              <div className="chip-group" style={{flexWrap:'wrap'}}>
+                {['良好','普通','不調気味','かなりつらい'].map(s => (
+                  <div key={s} className={'chip ' + (d.mentalState === s ? 'selected' : '')}
+                    onClick={() => setD({...d, mentalState: s, consultRequest: s === 'かなりつらい' ? true : d.consultRequest})}
+                  >{s}</div>
+                ))}
+              </div>
+            </div>
+            <div className="form-group">
+              <label>今月達成できたこと（3つ）</label>
+              {[0,1,2].map(i => (
+                <input key={i} style={{marginBottom:6}} value={d.achievements[i] || ''} onChange={e => setA(i, e.target.value)} placeholder={`達成 ${i+1}`} />
+              ))}
+            </div>
+            <div className="form-group">
+              <label>今月困ったこと</label>
+              <textarea value={d.difficulties} onChange={e => setD({...d, difficulties: e.target.value})} />
+            </div>
+            <div className="form-group">
+              <label>来月頑張りたいこと</label>
+              <textarea value={d.nextMonthGoal} onChange={e => setD({...d, nextMonthGoal: e.target.value})} />
+            </div>
+            <div className="form-group">
+              <label>
+                <input type="checkbox" checked={d.consultRequest} onChange={e => setD({...d, consultRequest: e.target.checked})} />
+                {' '}顧問・SCに相談したい
+              </label>
+              {d.consultRequest && (
+                <textarea style={{marginTop:8}} value={d.consultDetails} onChange={e => setD({...d, consultDetails: e.target.value})} placeholder="相談内容（任意・秘密厳守）" />
+              )}
+            </div>
+            <button className="btn" onClick={() => onSave(d)}>{initial.id ? '更新' : '保存'}</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ====== Coach Dashboard (P2: 全選手データを Firebase RTDB から購読) ======
+    function CoachDashboard({ state, allUsersData }) {
+      const [selected, setSelected] = useState(null);
+
+      // RTDB のデータを選手リストに整形
+      const players = useMemo(() => {
+        const arr = [];
+        for (const [uid, data] of Object.entries(allUsersData || {})) {
+          const s = (data && data.state) || {};
+          if (!s.user) continue;
+          if (s.user.isCoach) continue; // 顧問本人は除外
+          arr.push({
+            uid,
+            profile: s.user,
+            reflections: s.reflections || [],
+            izofRecords: s.izofRecords || [],
+            declarations: s.declarations || [],
+            monthlyReviews: s.monthlyReviews || [],
+            sessionLogs: s.sessionLogs || []
+          });
+        }
+        // 名前順ソート
+        arr.sort((a, b) => (a.profile.name || '').localeCompare(b.profile.name || '', 'ja'));
+        return arr;
+      }, [allUsersData]);
+
+      const allConsults = useMemo(() => {
+        const out = [];
+        players.forEach(p => {
+          (p.monthlyReviews || []).forEach(r => {
+            if (r.consultRequest) {
+              out.push({ ...r, _playerName: p.profile.name, _playerUid: p.uid });
+            }
+          });
+        });
+        // 最新月から
+        out.sort((a, b) => (b.yearMonth || '').localeCompare(a.yearMonth || ''));
+        return out;
+      }, [players]);
+
+      const totalReflections = players.reduce((s, p) => s + p.reflections.length, 0);
+      const totalIzof        = players.reduce((s, p) => s + p.izofRecords.length, 0);
+      const totalMonthly     = players.reduce((s, p) => s + p.monthlyReviews.length, 0);
+
+      if (selected) {
+        return <PlayerDetail player={selected} onBack={() => setSelected(null)} />;
+      }
+
+      return (
+        <>
+          <div className="section-h">顧問Dashboard</div>
+
+          <div className="card">
+            <div className="card-title">チーム全体</div>
+            <div className="card-subtitle">
+              登録選手 {players.length}名 / リアルタイム同期中
+            </div>
+            <div className="summary-stats" style={{marginTop:12}}>
+              <div className="stat-card">
+                <div className="num">{players.length}</div>
+                <div className="label">登録選手</div>
+              </div>
+              <div className="stat-card">
+                <div className="num">{totalReflections}</div>
+                <div className="label">試合振り返り</div>
+              </div>
+              <div className="stat-card">
+                <div className="num">{totalIzof}</div>
+                <div className="label">IZOF記録</div>
+              </div>
+            </div>
+          </div>
+
+          {allConsults.length > 0 && (
+            <>
+              <div className="section-h" style={{color:'var(--warning)'}}>⚠ 相談希望 {allConsults.length}件</div>
+              {allConsults.map((r, i) => (
+                <div
+                  key={r._playerUid + '_' + (r.yearMonth || i)}
+                  className="coach-list-item alert"
+                  onClick={() => {
+                    const p = players.find(pp => pp.uid === r._playerUid);
+                    if (p) setSelected(p);
+                  }}
+                  style={{cursor:'pointer'}}
+                >
+                  <div className="title">{r._playerName} さん（{r.yearMonth}）</div>
+                  <div className="sub">状態: {r.mentalState} / 練習意欲: {r.practiceMotivation}/10</div>
+                  {r.consultDetails && <div className="sub" style={{marginTop:6}}>📝 {r.consultDetails}</div>}
+                </div>
+              ))}
+            </>
+          )}
+
+          <div className="section-h">選手一覧 <span className="small">{players.length}名</span></div>
+          {players.length === 0 ? (
+            <div className="empty">
+              <div className="empty-icon">👥</div>
+              <div>まだ登録選手がいません</div>
+              <div className="text-small">選手がアプリに登録すると自動で表示されます</div>
+            </div>
+          ) : players.map(p => {
+            const lastRef = p.reflections[0];
+            const lastMonthly = p.monthlyReviews[0];
+            return (
+              <div key={p.uid} className="list-item" onClick={() => setSelected(p)} style={{cursor:'pointer'}}>
+                <div>
+                  <div className="title">{p.profile.name}</div>
+                  <div className="sub">{p.profile.grade}年 / {p.profile.position} / IZOF: {p.profile.izofType || '未設定'}</div>
+                  {lastRef && <div className="sub" style={{marginTop:4, color:'var(--text-2)'}}>直近: vs {lastRef.opponent} ({lastRef.result}) {lastRef.gameDate}</div>}
+                </div>
+                <div className="right">
+                  <div className="score">{p.reflections.length}</div>
+                  <div className="sub">振り返り</div>
+                </div>
+              </div>
+            );
+          })}
+
+          <div className="card mt-16">
+            <div className="card-title">P3予定</div>
+            <div className="card-subtitle">
+              ・handball-analyzer CSV取込 → 各選手に配信<br/>
+              ・DIPCA.3 心理測定の管理<br/>
+              ・セキュリティルールの厳格化（選手間のデータ秘匿）
+            </div>
+          </div>
+        </>
+      );
+    }
+
+    // ====== Player Detail (顧問が個別選手の詳細を見る) ======
+    function PlayerDetail({ player, onBack }) {
+      const p = player;
+      return (
+        <>
+          <button className="btn-ghost mb-16" onClick={onBack}>← 選手一覧に戻る</button>
+          <div className="section-h">{p.profile.name} さん</div>
+
+          <div className="card">
+            <div className="card-title">プロフィール</div>
+            <div className="stat-row"><span className="label">学年</span><span className="value">{p.profile.grade}年</span></div>
+            <div className="stat-row"><span className="label">ポジション</span><span className="value">{p.profile.position}</span></div>
+            <div className="stat-row"><span className="label">IZOF型</span><span className="value">{p.profile.izofType || '未設定'}</span></div>
+            <div className="stat-row"><span className="label">登録日</span><span className="value">{p.profile.createdAt ? new Date(p.profile.createdAt).toLocaleDateString('ja-JP') : '-'}</span></div>
+          </div>
+
+          <div className="section-h">月評価 <span className="small">{p.monthlyReviews.length}件</span></div>
+          {p.monthlyReviews.length === 0 ? (
+            <div className="empty"><div className="empty-icon">📊</div><div>まだ記録なし</div></div>
+          ) : p.monthlyReviews.map(r => (
+            <div key={r.id} className={'coach-list-item' + (r.consultRequest ? ' alert' : '')}>
+              <div className="title">{r.yearMonth}</div>
+              <div className="sub">状態: {r.mentalState} / 練習意欲: {r.practiceMotivation}/10 / 試合満足: {r.gameStateScore}/10</div>
+              {r.achievements && r.achievements.filter(Boolean).length > 0 && (
+                <div className="sub" style={{marginTop:6}}>達成: {r.achievements.filter(Boolean).join(' / ')}</div>
+              )}
+              {r.difficulties && <div className="sub" style={{marginTop:4}}>困: {r.difficulties}</div>}
+              {r.consultRequest && r.consultDetails && (
+                <div className="sub" style={{marginTop:6, color:'var(--warning)'}}>⚠ 相談: {r.consultDetails}</div>
+              )}
+            </div>
+          ))}
+
+          <div className="section-h">試合振り返り <span className="small">{p.reflections.length}件</span></div>
+          {p.reflections.length === 0 ? (
+            <div className="empty"><div className="empty-icon">📝</div><div>まだ振り返りなし</div></div>
+          ) : p.reflections.slice(0, 10).map(r => (
+            <div key={r.id} className="list-item">
+              <div>
+                <div className="title">vs {r.opponent || '(未入力)'} ({r.result || '?'})</div>
+                <div className="sub">{r.gameDate}</div>
+                {r.mentalFinding && <div className="sub" style={{marginTop:4}}>💭 {r.mentalFinding}</div>}
+                {r.nextTask && <div className="sub" style={{marginTop:4}}>→ {r.nextTask}</div>}
+              </div>
+              <div className="right">
+                <div className="score">{r.selfScore}</div>
+                <div className="sub">/10</div>
+              </div>
+            </div>
+          ))}
+          {p.reflections.length > 10 && <div className="text-small text-muted">...他 {p.reflections.length - 10} 件</div>}
+
+          <div className="section-h">IZOF記録 <span className="small">{p.izofRecords.length}件</span></div>
+          {p.izofRecords.length === 0 ? (
+            <div className="empty"><div className="empty-icon">🎯</div><div>まだ記録なし</div></div>
+          ) : p.izofRecords.slice(0, 10).map(r => (
+            <div key={r.id} className="list-item">
+              <div>
+                <div className="title">{r.date} {r.context && `(${r.context})`}</div>
+                <div className="sub">緊張:{r.tension} 集中:{r.focus} 自信:{r.confidence} 体調:{r.condition}</div>
+              </div>
+            </div>
+          ))}
+
+          <div className="section-h">行動宣言</div>
+          {p.declarations.length === 0 ? (
+            <div className="empty"><div className="empty-icon">✅</div><div>まだ記録なし</div></div>
+          ) : p.declarations.map(d => (
+            <div key={d.id} className="list-item">
+              <div>
+                <div className="title">{d.declaration}</div>
+                <div className="sub">{d.startDate}〜 / {(d.checks||[]).length}日達成 / {d.completed ? '完了' : '進行中'}</div>
+              </div>
+            </div>
+          ))}
+        </>
+      );
+    }
+
+    // ====== Mount ======
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
