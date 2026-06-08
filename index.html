@@ -654,16 +654,32 @@
         const handler = ref.on('value', (snap) => callback(snap.val() || {}));
         return () => ref.off('value', handler);
       },
-      // ----- 試合データ（CSV取込） -----
+      // ----- 試合データ（CSV取込 or クラウド試合取込） -----
       saveGameStats: async (authUid, gameId, rowIdx, statsRow) => {
         if (!fbDB || !authUid) return;
         return fbDB.ref('users/' + authUid + '/gameStats/' + gameId + '/' + rowIdx).set(statsRow);
+      },
+      // 1選手の1試合分をまとめて保存（クラウド取込用、高速）
+      saveGameStatsBulk: async (authUid, gameId, rowsObj) => {
+        if (!fbDB || !authUid) return;
+        return fbDB.ref('users/' + authUid + '/gameStats/' + gameId).set(rowsObj);
       },
       subscribeMyGameStats: (authUid, callback) => {
         if (!fbDB || !authUid) return () => {};
         const ref = fbDB.ref('users/' + authUid + '/gameStats');
         const handler = ref.on('value', (snap) => callback(snap.val() || {}));
         return () => ref.off('value', handler);
+      },
+      // ----- クラウド試合（analyzer が保存、顧問が取込） -----
+      subscribeMatches: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('matches');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}));
+        return () => ref.off('value', handler);
+      },
+      markMatchImported: async (matchId, coachUid) => {
+        if (!fbDB) return;
+        return fbDB.ref('matches/' + matchId + '/importedAt').set(firebase.database.ServerValue.TIMESTAMP);
       }
     };
 
@@ -761,6 +777,8 @@
       const [roster, setRoster] = useState({});         // {rosterId: {...}}
       const [rosterToUid, setRosterToUid] = useState({}); // {rosterId: authUid}
       const [myGameStats, setMyGameStats] = useState({}); // 自分のCSV取込済データ
+      const [matches, setMatches] = useState({});         // クラウド試合（analyzer保存）
+      const [autoImport, setAutoImport] = useState(() => localStorage.getItem('mental_auto_import') === '1');
       const lastCloudJsonRef = useRef('');
       const writeTimerRef = useRef(null);
       const firstCloudLoadRef = useRef(false);
@@ -779,6 +797,52 @@
         const unsub = storage.subscribeMyGameStats(authUid, setMyGameStats);
         return unsub;
       }, [authUid]);
+
+      // ── クラウド試合購読（顧問のみ）
+      useEffect(() => {
+        if (!authUid || !state.user || !state.user.isCoach) { setMatches({}); return; }
+        const unsub = storage.subscribeMatches(setMatches);
+        return unsub;
+      }, [authUid, state.user && state.user.isCoach]);
+
+      // ── クラウド試合を各選手の gameStats に取込（ワンボタン/自動共通）
+      const importMatch = useCallback(async (matchId, matchData) => {
+        if (!matchData || !matchData.rows) return { ok: false, reason: 'no rows' };
+        const byRoster = {};
+        for (const row of matchData.rows) {
+          const rid = row.rosterId;
+          if (!rid) continue;
+          if (!byRoster[rid]) byRoster[rid] = {};
+          const idx = Object.keys(byRoster[rid]).length;
+          byRoster[rid][idx] = row;
+        }
+        let savedPlayers = 0, skippedNoUid = 0;
+        const gameId = matchId;
+        for (const [rid, rowsObj] of Object.entries(byRoster)) {
+          const targetUid = rosterToUid[rid];
+          if (!targetUid) { skippedNoUid++; continue; }
+          try {
+            await storage.saveGameStatsBulk(targetUid, gameId, rowsObj);
+            savedPlayers++;
+          } catch (e) { console.warn('[importMatch]', rid, e); }
+        }
+        await storage.markMatchImported(matchId, authUid);
+        return { ok: true, savedPlayers, skippedNoUid };
+      }, [rosterToUid, authUid]);
+
+      // ── 自動取込（トグルON時、未取込試合を自動配信）
+      const isCoachNow = state.user && state.user.isCoach;
+      useEffect(() => {
+        if (!autoImport || !isCoachNow) return;
+        const pending = Object.entries(matches).filter(([id, m]) => m && !m.importedAt);
+        if (pending.length === 0) return;
+        (async () => {
+          for (const [id, m] of pending) {
+            const res = await importMatch(id, m);
+            if (res && res.ok) showToast(`自動取込: ${m.opponent}（${res.savedPlayers}名）`);
+          }
+        })();
+      }, [matches, autoImport, isCoachNow, importMatch]);
 
       // ── Firebase 認証状態監視
       useEffect(() => {
@@ -941,6 +1005,10 @@
                 allUsersData={allUsersData}
                 roster={roster}
                 rosterToUid={rosterToUid}
+                matches={matches}
+                autoImport={autoImport}
+                onToggleAutoImport={(v) => { setAutoImport(v); localStorage.setItem('mental_auto_import', v ? '1' : '0'); }}
+                importMatch={importMatch}
                 showToast={showToast}
               />
             )}
@@ -1883,9 +1951,12 @@
     }
 
     // ====== Coach Dashboard (P2: 全選手データを Firebase RTDB から購読) ======
-    function CoachDashboard({ state, allUsersData, roster, rosterToUid, showToast }) {
+    function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, autoImport, onToggleAutoImport, importMatch, showToast }) {
       const [selected, setSelected] = useState(null);
-      const [tab, setTab] = useState('overview'); // overview / roster / csv
+      const [tab, setTab] = useState('overview'); // overview / roster / csv / cloud
+
+      // 未取込のクラウド試合数（バッジ用）
+      const pendingMatchCount = Object.values(matches || {}).filter(m => m && !m.importedAt).length;
 
       // RTDB のデータを選手リストに整形
       const players = useMemo(() => {
@@ -1894,6 +1965,7 @@
           const s = (data && data.state) || {};
           if (!s.user) continue;
           if (s.user.isCoach) continue; // 顧問本人は除外
+          const statsAgg = aggregateGameStats((data && data.gameStats) || {});
           arr.push({
             uid,
             profile: s.user,
@@ -1901,7 +1973,10 @@
             izofRecords: s.izofRecords || [],
             declarations: s.declarations || [],
             monthlyReviews: s.monthlyReviews || [],
-            sessionLogs: s.sessionLogs || []
+            sessionLogs: s.sessionLogs || [],
+            gameStats: (data && data.gameStats) || {},
+            statsGames: statsAgg.games,
+            statsTotal: statsAgg.total
           });
         }
         // 名前順ソート
@@ -1937,14 +2012,21 @@
       if (tab === 'csv') {
         return <CsvImport roster={roster} rosterToUid={rosterToUid} showToast={showToast} onBack={() => setTab('overview')} />;
       }
+      if (tab === 'cloud') {
+        return <CloudMatches matches={matches} roster={roster} rosterToUid={rosterToUid} autoImport={autoImport} onToggleAutoImport={onToggleAutoImport} importMatch={importMatch} showToast={showToast} onBack={() => setTab('overview')} />;
+      }
 
       return (
         <>
           <div className="section-h">顧問Dashboard</div>
 
           <div className="coach-tabs" style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap'}}>
-            <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => setTab('roster')}>👥 名簿管理 ({Object.keys(roster).length}名)</button>
-            <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => setTab('csv')}>📥 CSV取込</button>
+            <button className="btn btn-secondary" style={{flex:'1 1 45%'}} onClick={() => setTab('roster')}>👥 名簿管理 ({Object.keys(roster).length})</button>
+            <button className="btn" style={{flex:'1 1 45%', position:'relative'}} onClick={() => setTab('cloud')}>
+              ☁ クラウド試合取込
+              {pendingMatchCount > 0 && <span style={{position:'absolute', top:-6, right:-6, background:'var(--warning)', color:'#000', borderRadius:10, fontSize:11, fontWeight:'bold', padding:'2px 7px'}}>{pendingMatchCount}</span>}
+            </button>
+            <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => setTab('csv')}>📥 CSVファイル取込</button>
           </div>
 
           <div className="card">
@@ -2005,6 +2087,9 @@
                   <div className="title">{p.profile.name}</div>
                   <div className="sub">{p.profile.grade}年 / {p.profile.position} / IZOF: {p.profile.izofType || '未設定'}</div>
                   {lastRef && <div className="sub" style={{marginTop:4, color:'var(--text-2)'}}>直近: vs {lastRef.opponent} ({lastRef.result}) {lastRef.gameDate}</div>}
+                  {p.statsGames && p.statsGames.length > 0 && (
+                    <div className="sub" style={{marginTop:4, color:'var(--accent)'}}>📈 {p.statsGames.length}試合 / {p.statsTotal.goals}G / 決定率{p.statsTotal.goalRate}%</div>
+                  )}
                 </div>
                 <div className="right">
                   <div className="score">{p.reflections.length}</div>
@@ -2041,6 +2126,30 @@
             <div className="stat-row"><span className="label">IZOF型</span><span className="value">{p.profile.izofType || '未設定'}</span></div>
             <div className="stat-row"><span className="label">登録日</span><span className="value">{p.profile.createdAt ? new Date(p.profile.createdAt).toLocaleDateString('ja-JP') : '-'}</span></div>
           </div>
+
+          {/* 試合統計（analyzer由来） */}
+          {p.statsGames && p.statsGames.length > 0 && (
+            <>
+              <div className="section-h">試合統計（analyzer） <span className="small">{p.statsGames.length}試合</span></div>
+              <div className="card">
+                <div className="summary-stats">
+                  <div className="stat-card"><div className="num">{p.statsTotal.goals}</div><div className="label">ゴール</div></div>
+                  <div className="stat-card"><div className="num">{p.statsTotal.shots}</div><div className="label">シュート</div></div>
+                  <div className="stat-card"><div className="num">{p.statsTotal.goalRate}%</div><div className="label">決定率</div></div>
+                </div>
+                <div className="stat-row mt-16"><span className="label">ターンオーバー</span><span className="value">{p.statsTotal.turnovers}回</span></div>
+              </div>
+              {p.statsGames.slice(0, 8).map(g => (
+                <div key={g.gameId} className="list-item">
+                  <div>
+                    <div className="title">vs {g.opponent}</div>
+                    <div className="sub">{g.date} · {g.goals}G/{g.shots}S{g.goalRate > 0 && ` (${g.goalRate}%)`}{g.turnovers > 0 && ` · TO${g.turnovers}`}</div>
+                  </div>
+                  <div className="right"><div className="score">{g.goals}</div><div className="sub">G</div></div>
+                </div>
+              ))}
+            </>
+          )}
 
           <div className="section-h">月評価 <span className="small">{p.monthlyReviews.length}件</span></div>
           {p.monthlyReviews.length === 0 ? (
@@ -2105,46 +2214,44 @@
       );
     }
 
+    // ====== gameStats 集計（選手・顧問で共通） ======
+    function aggregateGameStats(myGameStats) {
+      const games = Object.entries(myGameStats || {}).map(([gameId, rows]) => {
+        const rowArr = Object.values(rows || {});
+        let shots = 0, goals = 0, missed = 0, turnovers = 0;
+        let firstDate = '', opponent = '';
+        rowArr.forEach(r => {
+          if (!firstDate && r.date) firstDate = r.date;
+          if (!opponent && r.opponent) opponent = r.opponent;
+          if (r.mode === 'attack') {
+            shots++;
+            if (r.result === 'goal') goals++;
+            else missed++;
+          }
+          if (r.mode === 'turnover') turnovers++;
+        });
+        return {
+          gameId,
+          date: firstDate,
+          opponent: opponent || '(相手名なし)',
+          rowCount: rowArr.length,
+          shots, goals, missed, turnovers,
+          goalRate: shots > 0 ? Math.round(goals / shots * 100) : 0,
+          rows: rowArr
+        };
+      });
+      games.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      let shots = 0, goals = 0, missed = 0, turnovers = 0;
+      games.forEach(g => { shots += g.shots; goals += g.goals; missed += g.missed; turnovers += g.turnovers; });
+      const total = { shots, goals, missed, turnovers, goalRate: shots > 0 ? Math.round(goals / shots * 100) : 0 };
+      return { games, total };
+    }
+
     // ====== My Stats (選手用: 自分のCSV取込済データを表示) ======
     function MyStats({ state, myGameStats }) {
       const [selectedGame, setSelectedGame] = useState(null);
 
-      // gameStats を試合別に集計
-      const games = useMemo(() => {
-        const arr = Object.entries(myGameStats || {}).map(([gameId, rows]) => {
-          const rowArr = Object.values(rows || {});
-          let shots = 0, goals = 0, missed = 0, turnovers = 0;
-          let firstDate = '', opponent = '';
-          rowArr.forEach(r => {
-            if (!firstDate && r.date) firstDate = r.date;
-            if (!opponent && r.opponent) opponent = r.opponent;
-            if (r.mode === 'attack') {
-              shots++;
-              if (r.result === 'goal') goals++;
-              else missed++;
-            }
-            if (r.mode === 'turnover') turnovers++;
-          });
-          return {
-            gameId,
-            date: firstDate,
-            opponent: opponent || '(相手名なし)',
-            rowCount: rowArr.length,
-            shots, goals, missed, turnovers,
-            goalRate: shots > 0 ? Math.round(goals / shots * 100) : 0,
-            rows: rowArr
-          };
-        });
-        arr.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-        return arr;
-      }, [myGameStats]);
-
-      // 累計
-      const total = useMemo(() => {
-        let shots = 0, goals = 0, missed = 0, turnovers = 0;
-        games.forEach(g => { shots += g.shots; goals += g.goals; missed += g.missed; turnovers += g.turnovers; });
-        return { shots, goals, missed, turnovers, goalRate: shots > 0 ? Math.round(goals / shots * 100) : 0 };
-      }, [games]);
+      const { games, total } = useMemo(() => aggregateGameStats(myGameStats), [myGameStats]);
 
       // 振り返りと試合データの紐付け
       const reflectionsByDate = useMemo(() => {
@@ -2497,6 +2604,133 @@
             {onDelete && <button className="btn btn-danger mt-16" onClick={onDelete}>削除</button>}
           </div>
         </div>
+      );
+    }
+
+    // ====== Cloud Matches (analyzerがクラウド保存した試合をワンボタン取込) ======
+    function CloudMatches({ matches, roster, rosterToUid, autoImport, onToggleAutoImport, importMatch, showToast, onBack }) {
+      const [busyId, setBusyId] = useState(null);
+
+      // 試合を整形（新しい順）
+      const matchList = useMemo(() => {
+        const arr = Object.entries(matches || {}).map(([id, m]) => {
+          // 何名分の rosterId が含まれ、何名が mental 連携済か
+          const ridSet = new Set();
+          (m.rows || []).forEach(r => { if (r.rosterId) ridSet.add(r.rosterId); });
+          const linkedCount = Array.from(ridSet).filter(rid => rosterToUid && rosterToUid[rid]).length;
+          return {
+            id,
+            date: m.date || '',
+            opponent: m.opponent || '(相手なし)',
+            rowCount: m.rowCount || (m.rows || []).length,
+            playerCount: ridSet.size,
+            linkedCount,
+            unlinkedCount: ridSet.size - linkedCount,
+            imported: !!m.importedAt,
+            importedAt: m.importedAt,
+            raw: m
+          };
+        });
+        arr.sort((a, b) => {
+          if (a.imported !== b.imported) return a.imported ? 1 : -1; // 未取込を上に
+          return (b.date || '').localeCompare(a.date || '');
+        });
+        return arr;
+      }, [matches, rosterToUid]);
+
+      const pending = matchList.filter(m => !m.imported);
+
+      const doImport = async (m) => {
+        setBusyId(m.id);
+        try {
+          const res = await importMatch(m.id, m.raw);
+          if (res.ok) {
+            showToast(`✅ ${m.opponent}: ${res.savedPlayers}名に配信` + (res.skippedNoUid ? `（未連携${res.skippedNoUid}名スキップ）` : ''));
+          } else {
+            showToast('取込失敗');
+          }
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      const importAll = async () => {
+        if (pending.length === 0) return;
+        if (!confirm(`未取込の ${pending.length} 試合をすべて配信しますか？`)) return;
+        for (const m of pending) {
+          setBusyId(m.id);
+          await importMatch(m.id, m.raw);
+        }
+        setBusyId(null);
+        showToast(`${pending.length} 試合を一括配信しました`);
+      };
+
+      return (
+        <>
+          <button className="btn-ghost mb-16" onClick={onBack}>← 顧問Dashboardに戻る</button>
+          <div className="section-h">クラウド試合取込</div>
+
+          <div className="card">
+            <div className="card-title">仕組み</div>
+            <div className="card-subtitle" style={{lineHeight:1.7}}>
+              analyzer で「☁ メンタルアプリに送信」を押した試合がここに出ます。<br/>
+              「取込」を押すと、各選手のアプリ（マイ統計）に自動配信されます。
+            </div>
+            <label style={{display:'flex', alignItems:'center', gap:10, marginTop:16, padding:'10px 12px', background:'rgba(255,255,255,0.04)', borderRadius:8, cursor:'pointer'}}>
+              <input type="checkbox" checked={autoImport} onChange={e => onToggleAutoImport(e.target.checked)} />
+              <div>
+                <div style={{fontWeight:'bold'}}>自動取込</div>
+                <div className="text-small text-muted">analyzer から届いた試合を確認なしで即配信</div>
+              </div>
+            </label>
+            {autoImport && (
+              <div className="text-small" style={{color:'var(--warning)', marginTop:8}}>
+                ⚠ 自動ON中。練習試合・テストデータも即配信されます。
+              </div>
+            )}
+          </div>
+
+          {pending.length > 0 && (
+            <button className="btn mb-16 mt-16" onClick={importAll}>
+              📥 未取込 {pending.length}試合を一括配信
+            </button>
+          )}
+
+          {matchList.length === 0 && (
+            <div className="empty">
+              <div className="empty-icon">☁</div>
+              <div>クラウド試合がまだありません</div>
+              <div className="text-small">analyzer で「メンタルアプリに送信」してください</div>
+            </div>
+          )}
+
+          {matchList.map(m => (
+            <div key={m.id} className="card" style={{marginBottom:12, opacity: m.imported ? 0.6 : 1}}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
+                <div>
+                  <div className="card-title">vs {m.opponent}</div>
+                  <div className="card-subtitle">
+                    {m.date} · {m.rowCount}件 · 選手{m.playerCount}名
+                    {m.unlinkedCount > 0 && <span style={{color:'var(--warning)'}}> · 未連携{m.unlinkedCount}名</span>}
+                  </div>
+                </div>
+                {m.imported && <span className="badge-coach" style={{background:'var(--success)'}}>取込済</span>}
+              </div>
+              {m.unlinkedCount > 0 && (
+                <div className="text-small" style={{color:'var(--warning)', marginTop:8}}>
+                  ⚠ {m.unlinkedCount}名はmental未登録。その選手は登録後に再取込が必要です。
+                </div>
+              )}
+              <button
+                className={'btn mt-16 ' + (m.imported ? 'btn-secondary' : '')}
+                disabled={busyId === m.id || m.linkedCount === 0}
+                onClick={() => doImport(m)}
+              >
+                {busyId === m.id ? '配信中...' : (m.imported ? '🔄 再配信' : `📥 ${m.linkedCount}名に配信`)}
+              </button>
+            </div>
+          ))}
+        </>
       );
     }
 
