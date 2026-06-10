@@ -594,6 +594,9 @@
       };
     }
 
+    // IZOF型の旧表記マイグレーション（2026-06-10: 中庸型→中間型）
+    const normIzofType = (t) => t === '中庸型' ? '中間型' : t;
+
     const fbAuth = (typeof window !== 'undefined') ? window.fbAuth : null;
     const fbDB   = (typeof window !== 'undefined') ? window.fbDB   : null;
 
@@ -1670,7 +1673,7 @@
     // ====== IZOF ======
     function Izof({ state, update, showToast }) {
       const [adding, setAdding] = useState(false);
-      const [izofType, setIzofType] = useState(state.user.izofType || '');
+      const [izofType, setIzofType] = useState(normIzofType(state.user.izofType) || '');
 
       const save = (record) => {
         update({
@@ -1689,7 +1692,7 @@
             <div className="card-title">自分のIZOF型</div>
             <div className="card-subtitle">Session 1 で発見した型</div>
             <div className="chip-group">
-              {['低覚醒型','中庸型','高覚醒型'].map(t => (
+              {['低覚醒型','中間型','高覚醒型'].map(t => (
                 <div key={t}
                   className={'chip ' + (izofType === t ? 'selected' : '')}
                   onClick={() => { setIzofType(t); update({user: {...state.user, izofType: t}}); showToast('IZOF型を保存'); }}
@@ -1698,7 +1701,7 @@
             </div>
             <div className="text-small text-muted mt-16">
               {izofType === '低覚醒型' && '→ リラックスでベスト。深呼吸・静かな音楽が合う'}
-              {izofType === '中庸型' && '→ ほどよい緊張でベスト。軽い声出し・ストレッチ'}
+              {izofType === '中間型' && '→ ほどよい緊張でベスト。軽い声出し・ストレッチ'}
               {izofType === '高覚醒型' && '→ 興奮状態でベスト。アップビート・ハイタッチ'}
             </div>
           </div>
@@ -1942,7 +1945,7 @@
         { k: 'bestState', t: 'textarea', label: '② その時の自分（緊張・集中・自信・体調はどうだった？）' },
         { k: 'worst', t: 'textarea', label: '③ ワーストだった試合・場面' },
         { k: 'worstState', t: 'textarea', label: '④ その時の自分' },
-        { k: 'izofType', t: 'choice', label: '⑤ 自分のIZOF型（→IZOFタブにも設定しよう）', options: ['低覚醒型', '中庸型', '高覚醒型'] },
+        { k: 'izofType', t: 'choice', label: '⑤ 自分のIZOF型（→IZOFタブにも設定しよう）', options: ['低覚醒型', '中間型', '高覚醒型'] },
       ], note: '行動宣言は【宣言】タブ、試合ノートは【振り返り】タブで。' },
       { id: 2, icon: '🧮', title: '結果の方程式『ぼくの式』', session: 'Session 2（6/25）', fields: [
         { k: 'do1', t: 'text', label: '① 何をするか 1（技術・戦術・体力／具体的に）' },
@@ -2546,7 +2549,7 @@
               <div key={p.uid} className="list-item" onClick={() => setSelected(p)} style={{cursor:'pointer'}}>
                 <div>
                   <div className="title">{p.profile.name}</div>
-                  <div className="sub">{p.profile.grade}年 / {p.profile.position} / IZOF: {p.profile.izofType || '未設定'}</div>
+                  <div className="sub">{p.profile.grade}年 / {p.profile.position} / IZOF: {normIzofType(p.profile.izofType) || '未設定'}</div>
                   {lastRef && <div className="sub" style={{marginTop:4, color:'var(--text-2)'}}>直近: vs {lastRef.opponent} ({lastRef.result}) {lastRef.gameDate}</div>}
                   {p.statsGames && p.statsGames.length > 0 && (
                     <div className="sub" style={{marginTop:4, color:'var(--accent)'}}>📈 {p.statsGames.length}試合 / {p.statsTotal.goals}G / 決定率{p.statsTotal.goalRate}%</div>

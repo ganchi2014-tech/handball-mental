@@ -167,7 +167,7 @@ firestore root/
 │   ├── name: "選手名"
 │   ├── grade: 2 (年生)
 │   ├── position: "CB" | "GK" | "サイド" | "ピボット" | "バック"
-│   ├── izofType: "中庸型" | "低覚醒型" | "高覚醒型" (Session 1で発見)
+│   ├── izofType: "中間型" | "低覚醒型" | "高覚醒型" (Session 1で発見)
 │   ├── pinHash: "..." (簡易PIN認証用)
 │   └── createdAt: timestamp
 │   ※ 背番号は管理しない（全員に背番号があるとは限らないため）
