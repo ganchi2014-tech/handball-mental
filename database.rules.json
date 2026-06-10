@@ -20,6 +20,11 @@
       ".write": false
     },
 
+    "team": {
+      ".read": "auth != null",
+      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+    },
+
     "roster": {
       ".read": "auth != null",
       ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"

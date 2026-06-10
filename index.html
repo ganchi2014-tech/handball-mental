@@ -589,7 +589,8 @@
         izofRecords: [],
         declarations: [],
         sessionLogs: [],
-        selfChecks: []
+        selfChecks: [],
+        sessionWorks: {}
       };
     }
 
@@ -643,6 +644,17 @@
         const ref = fbDB.ref('coaches');
         const handler = ref.on('value', (snap) => callback(snap.val() || {}));
         return () => ref.off('value', handler);
+      },
+      // ----- チームボード（合言葉・チームルール等。全員read・顧問write） -----
+      subscribeTeam: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('team');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
+        return () => ref.off('value', handler);
+      },
+      saveTeam: async (data) => {
+        if (!fbDB) return;
+        return fbDB.ref('team').update({ ...data, updatedAt: firebase.database.ServerValue.TIMESTAMP });
       },
       // ----- 名簿マスター（analyzer と共有） -----
       subscribeRoster: (callback) => {
@@ -795,6 +807,7 @@
       const [roster, setRoster] = useState({});         // {rosterId: {...}}
       const [rosterToUid, setRosterToUid] = useState({}); // {rosterId: authUid}
       const [coaches, setCoaches] = useState({});         // {authUid: true} 顧問承認リスト
+      const [team, setTeam] = useState({});               // チームボード（合言葉・ルール等）
       const [myGameStats, setMyGameStats] = useState({}); // 自分のCSV取込済データ
       const [matches, setMatches] = useState({});         // クラウド試合（analyzer保存）
       const [autoImport, setAutoImport] = useState(() => localStorage.getItem('mental_auto_import') === '1');
@@ -808,7 +821,8 @@
         const unsub1 = storage.subscribeRoster(setRoster);
         const unsub2 = storage.subscribeRosterToUid(setRosterToUid);
         const unsub3 = storage.subscribeCoaches(setCoaches);
-        return () => { unsub1(); unsub2(); unsub3(); };
+        const unsub4 = storage.subscribeTeam(setTeam);
+        return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
       }, []);
 
       // 顧問承認済みか（サーバ /coaches に登録されているか）
@@ -1002,7 +1016,7 @@
             onCoachToggle={() => update({ user: { ...state.user, isCoach: !state.user.isCoach } })}
           />
           <div className="content">
-            {view === 'home' && <Home state={state} onNav={setView} />}
+            {view === 'home' && <Home state={state} onNav={setView} team={team} />}
             {view === 'reflection' && (
               <Reflections
                 state={state}
@@ -1015,6 +1029,9 @@
             )}
             {view === 'selfcheck' && (
               <SelfCheck state={state} update={update} showToast={showToast} onNav={setView} />
+            )}
+            {view === 'works' && (
+              <SessionWorks state={state} update={update} showToast={showToast} team={team} />
             )}
             {view === 'declaration' && (
               <Declarations state={state} update={update} showToast={showToast} />
@@ -1039,6 +1056,8 @@
                   isApprovedCoach={isApprovedCoach}
                   myUid={authUid}
                   showToast={showToast}
+                  team={team}
+                  saveTeam={storage.saveTeam}
                 />
               ) : (
                 <CoachApprovalPending myUid={authUid} showToast={showToast} />
@@ -1397,7 +1416,7 @@
     }
 
     // ====== Home ======
-    function Home({ state, onNav }) {
+    function Home({ state, onNav, team }) {
       const today = new Date();
       const hour = today.getHours();
       const greeting = hour < 11 ? 'おはよう' : hour < 18 ? 'こんにちは' : 'お疲れ様';
@@ -1452,7 +1471,24 @@
               <div className="tile-title">セルフチェック</div>
               <div className="tile-sub">心の5つの力（年3回）</div>
             </button>
+            <button className="quick-tile" onClick={() => onNav('works')}>
+              <span className="tile-icon">📒</span>
+              <div className="tile-title">セッションワーク</div>
+              <div className="tile-sub">紙の代わりにここに書く</div>
+            </button>
           </div>
+
+          {team && (team.aikotoba || team.breathingRule || team.norms || team.tryNow) && (
+            <>
+              <div className="section-h">チームボード</div>
+              <div className="card">
+                {team.aikotoba && <div className="stat-row"><span className="label">合言葉</span><span className="value">{team.aikotoba}</span></div>}
+                {team.breathingRule && <div className="stat-row"><span className="label">2-3-15ルール</span><span className="value">{team.breathingRule}</span></div>}
+                {team.norms && <div className="stat-row"><span className="label">コートの約束</span><span className="value" style={{whiteSpace:'pre-line', textAlign:'right'}}>{team.norms}</span></div>}
+                {team.tryNow && <div className="stat-row"><span className="label">今のTry</span><span className="value">{team.tryNow}</span></div>}
+              </div>
+            </>
+          )}
 
           {recentReflection && (
             <>
@@ -1899,6 +1935,145 @@
       );
     }
 
+    // ====== セッションワーク（紙WS廃止→アプリ完結・2026-06-10方針） ======
+    const SESSION_WORKS = [
+      { id: 1, icon: '🎯', title: 'IZOF発見ワーク', session: 'Session 1（6/18）キックオフ', fields: [
+        { k: 'best', t: 'textarea', label: '① ベストだった試合・場面（いつ・どんなプレー）' },
+        { k: 'bestState', t: 'textarea', label: '② その時の自分（緊張・集中・自信・体調はどうだった？）' },
+        { k: 'worst', t: 'textarea', label: '③ ワーストだった試合・場面' },
+        { k: 'worstState', t: 'textarea', label: '④ その時の自分' },
+        { k: 'izofType', t: 'choice', label: '⑤ 自分のIZOF型（→IZOFタブにも設定しよう）', options: ['低覚醒型', '中庸型', '高覚醒型'] },
+      ], note: '行動宣言は【宣言】タブ、試合ノートは【振り返り】タブで。' },
+      { id: 2, icon: '🧮', title: '結果の方程式『ぼくの式』', session: 'Session 2（6/25）', fields: [
+        { k: 'do1', t: 'text', label: '① 何をするか 1（技術・戦術・体力／具体的に）' },
+        { k: 'do2', t: 'text', label: '② 何をするか 2' },
+        { k: 'do3', t: 'text', label: '③ 何をするか 3' },
+        { k: 'mind1', t: 'text', label: '④ 心 1（5つの力から、自分の言葉で）' },
+        { k: 'mind2', t: 'text', label: '⑤ 心 2' },
+        { k: 'mind3', t: 'text', label: '⑥ 心 3' },
+        { k: 'equation', t: 'text', label: '⑦ ぼくの1行方程式　結果＝［心］×［何をするか］' },
+        { k: 'pairWord', t: 'text', label: '⑧ ペアの式で「いいな」と思った言葉' },
+      ], note: 'セルフチェックは 🧭セルフチェック で。「続ける1つ」は【宣言】タブへ。' },
+      { id: 3, icon: '🌬', title: '2-3-15呼吸 マイ・ルーティン', session: 'Session 3（7/2）', fields: [
+        { k: 'feel', t: 'textarea', label: '① 5サイクルやって、体はどう変わった？（「変わらない」も正解）' },
+        { k: 'typeNote', t: 'text', label: '② 自分の型での使い方メモ（高覚醒型→過剰な時だけ1〜2サイクル）' },
+        { k: 'scene1', t: 'text', label: '③ 使う場面 1（例：7m前／失点直後／寝る前）' },
+        { k: 'scene2', t: 'text', label: '④ 使う場面 2' },
+        { k: 'whyNot', t: 'textarea', label: '⑤ おためし期間：続かなかった日の理由メモ（忘れた・疲れた・効果不明…なんでもOK）' },
+      ], note: '毎日のチェックは【宣言】タブ（28日）で。チームルールはホームのチームボードに表示。' },
+    ];
+
+    function SessionWorks({ state, update, showToast, team }) {
+      const [editing, setEditing] = useState(null);
+      const works = state.sessionWorks || {};
+      return (
+        <>
+          <div className="section-h">セッションワーク</div>
+          <div className="card">
+            <div className="card-subtitle">
+              紙のワークシートの代わり。セッション中・あとにここへ書く。<br/>
+              書いた内容は<b>自分と顧問だけ</b>が見られる（他の選手は見られない）。全部埋めなくてOK・あとから書き足せる。
+            </div>
+          </div>
+          {SESSION_WORKS.map(w => {
+            const saved = works[w.id];
+            return (
+              <div key={w.id} className="list-item" onClick={() => setEditing(w)} style={{cursor:'pointer'}}>
+                <div>
+                  <div className="title">{w.icon} {w.title}</div>
+                  <div className="sub">{w.session}{saved ? ' ・ 記入済み' : ''}</div>
+                </div>
+                <div className="right"><div className="score">{saved ? '✓' : '–'}</div></div>
+              </div>
+            );
+          })}
+          {editing && (
+            <WorkEditor
+              work={editing}
+              initial={works[editing.id] || {}}
+              onCancel={() => setEditing(null)}
+              onSave={(vals) => {
+                update({ sessionWorks: { ...works, [editing.id]: { ...vals, updatedAt: Date.now() } } });
+                setEditing(null);
+                showToast('保存しました');
+              }}
+            />
+          )}
+        </>
+      );
+    }
+
+    function WorkEditor({ work, initial, onSave, onCancel }) {
+      const [v, setV] = useState(initial);
+      const set = (k, val) => setV({ ...v, [k]: val });
+      return (
+        <div className="modal-overlay" onClick={onCancel}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">{work.icon} {work.title}</div>
+              <button className="modal-close" onClick={onCancel}>×</button>
+            </div>
+            <div className="text-small text-muted mb-16">{work.session}。全部埋めなくてOK・あとから書き足せる。</div>
+            {work.fields.map(f => (
+              <div key={f.k} className="form-group">
+                <label>{f.label}</label>
+                {f.t === 'textarea' && <textarea rows={3} value={v[f.k] || ''} onChange={e => set(f.k, e.target.value)} />}
+                {f.t === 'text' && <input value={v[f.k] || ''} onChange={e => set(f.k, e.target.value)} />}
+                {f.t === 'choice' && (
+                  <div className="chip-group">
+                    {f.options.map(o => (
+                      <div key={o} className={'chip ' + (v[f.k] === o ? 'selected' : '')} onClick={() => set(f.k, o)}>{o}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            {work.note && <div className="text-small text-muted mb-16">{work.note}</div>}
+            <button className="btn" onClick={() => onSave(v)}>保存</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ====== チームボード（顧問が編集・全員のホームに表示） ======
+    function TeamBoardEdit({ team, saveTeam, showToast }) {
+      const [open, setOpen] = useState(false);
+      const [v, setV] = useState({});
+      const openEdit = () => {
+        setV({ aikotoba: team.aikotoba || '', breathingRule: team.breathingRule || '', norms: team.norms || '', tryNow: team.tryNow || '' });
+        setOpen(true);
+      };
+      const save = async () => {
+        try { await saveTeam(v); showToast('チームボードを保存しました'); setOpen(false); }
+        catch (e) { console.warn('[team save]', e); showToast('保存できません（Firebaseルールに /team が必要）'); }
+      };
+      return (
+        <div className="card">
+          <div className="card-title">🏳 チームボード（全選手のホームに表示）</div>
+          {!open ? (
+            <>
+              <div className="card-subtitle">
+                合言葉: {team.aikotoba || '未設定'}<br/>
+                2-3-15ルール: {team.breathingRule || '未設定'}<br/>
+                コートの約束: {team.norms || '未設定'}<br/>
+                今のTry: {team.tryNow || '未設定'}
+              </div>
+              <button className="btn-ghost" style={{width:'100%'}} onClick={openEdit}>編集する</button>
+            </>
+          ) : (
+            <>
+              <div className="form-group"><label>チーム合言葉（S1で選手が決定）</label><input value={v.aikotoba} onChange={e => setV({...v, aikotoba: e.target.value})} /></div>
+              <div className="form-group"><label>2-3-15ルール（S3で選手が決定。例: 試合20分前に3サイクル・高覚醒型は1〜2でOK）</label><input value={v.breathingRule} onChange={e => setV({...v, breathingRule: e.target.value})} /></div>
+              <div className="form-group"><label>コートの約束（S14で共同作成・改行区切り）</label><textarea rows={3} value={v.norms} onChange={e => setV({...v, norms: e.target.value})} /></div>
+              <div className="form-group"><label>今のTry（チームレトロで決定）</label><input value={v.tryNow} onChange={e => setV({...v, tryNow: e.target.value})} /></div>
+              <button className="btn" onClick={save}>保存</button>
+              <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={() => setOpen(false)}>キャンセル</button>
+            </>
+          )}
+        </div>
+      );
+    }
+
     // ====== Declarations ======
     function Declarations({ state, update, showToast }) {
       const [adding, setAdding] = useState(false);
@@ -2233,7 +2408,7 @@
     }
 
     // ====== Coach Dashboard (P2: 全選手データを Firebase RTDB から購読) ======
-    function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, autoImport, onToggleAutoImport, importMatch, isApprovedCoach, myUid, showToast }) {
+    function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, autoImport, onToggleAutoImport, importMatch, isApprovedCoach, myUid, showToast, team, saveTeam }) {
       const [selected, setSelected] = useState(null);
       const [tab, setTab] = useState('overview'); // overview / roster / csv / cloud
 
@@ -2255,6 +2430,7 @@
             izofRecords: s.izofRecords || [],
             declarations: s.declarations || [],
             selfChecks: s.selfChecks || [],
+            sessionWorks: s.sessionWorks || {},
             monthlyReviews: s.monthlyReviews || [],
             sessionLogs: s.sessionLogs || [],
             gameStats: (data && data.gameStats) || {},
@@ -2332,6 +2508,8 @@
               </div>
             </div>
           </div>
+
+          <TeamBoardEdit team={team || {}} saveTeam={saveTeam} showToast={showToast} />
 
           {allConsults.length > 0 && (
             <>
