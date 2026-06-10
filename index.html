@@ -1971,6 +1971,20 @@
         { k: 'vividness', t: 'choice', label: '④ 今日の鮮明度（自分メモ。低くて正常・反復で上がる）', options: ['1', '2', '3', '4', '5'] },
         { k: 'request', t: 'textarea', label: '⑤ 次回(7/30)やりたいこと＋理由ひとこと（呼吸もう一回深く／イメージの続き／目標の話 など自由）' },
       ], note: '行動宣言の更新は【宣言】タブで。鮮明度は誰とも比べない・自分の前回とだけ。' },
+      { id: 11, icon: '🫁', title: '呼吸の使い分け表', session: 'Session 11（8/27）応用呼吸', fields: [
+        { k: 'preGame', t: 'choice', label: '① 試合前 → 使う技（高覚醒型は「使わない」も正解）', options: ['2-3-15', '4-7-8', 'ボックス', '使わない'] },
+        { k: 'beforeSleep', t: 'choice', label: '② 寝る前 → 使う技', options: ['2-3-15', '4-7-8', 'ボックス', '使わない'] },
+        { k: 'inGame', t: 'choice', label: '③ 試合中・ベンチ → 使う技（30〜60秒で整える）', options: ['ボックス', '2-3-15短め', '使わない'] },
+        { k: 'gameSpot', t: 'text', label: '④ 自分の“試合の隙間”（例: ベンチに下がった30秒／7m判定待ち）' },
+        { k: 'feel478', t: 'textarea', label: '⑤ 4-7-8とボックスの体感メモ（「ぼーっとした」も正解。7秒きつければ4-4-6でOK）' },
+      ], note: '正解は人で違う。自分の取説は自分が編集長。' },
+      { id: 12, icon: '🎯', title: '目標の3本柱（新人戦）', session: 'Session 12（9/3）M3目標', fields: [
+        { k: 'outcome', t: 'text', label: '① 結果目標（勝敗・順位。方角を指すコンパス）' },
+        { k: 'performance', t: 'text', label: '② パフォーマンス目標（自分の数字。例: 左45度の決定率40%→50%）' },
+        { k: 'process', t: 'text', label: '③ プロセス目標（毎日の行動。完全に自分でコントロールできること）' },
+        { k: 'weekStep', t: 'text', label: '④ 今週の一歩（③の最初の1段。確実に踏めるサイズで）' },
+        { k: 'review', t: 'textarea', label: '⑤ 週1セルフ見直しメモ（毎週日曜2分: ③できた日数／②の数字／来週の一歩）' },
+      ], note: '目標は見直してよい（下方修正＝負けでなく操縦）。週1見直しは自分で回す——顧問は点呼しない。' },
     ];
 
     function SessionWorks({ state, update, showToast, team }) {
