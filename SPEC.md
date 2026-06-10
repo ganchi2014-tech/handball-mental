@@ -69,7 +69,7 @@ handball-system の既存ナビに「**メンタル**」タブを追加。中身
 - 全選手の試合振り返り一覧
 - 月1自己評価集約
 - 「相談したい」フラグの即時通知
-- DIPCA結果集計
+- 心の5つの力 セルフチェック（個人内の推移のみ。合計点・順位・選手間比較は出さない）
 
 ### F. セッション資料閲覧
 - 49回のセッションスライド
@@ -241,12 +241,12 @@ firestore root/
 │   ├── attended: bool            ← 出席（離席含む）
 │   └── createdAt: timestamp
 │
-├── dipca/{dipcaId}                ← DIPCA.3測定結果
-│   ├── playerId: ref
-│   ├── measureDate: date
-│   ├── round: "baseline" | "midterm" | "final"
-│   ├── scores: { 忍耐力: x, 闘争心: x, ... 12因子 }
+├── （※ users/{uid}/state.selfChecks[] に格納）  ← 心の5つの力セルフチェック（自作・自己採点）
+│   ├── id / date / round: "baseline" | "midterm" | "final"
+│   ├── items: [15]（各1-5）
+│   ├── axisScores: { m1, m2, m3, m4, m5 }（各3-15。合計点は持たない＝序列化防止）
 │   └── createdAt: timestamp
+│   ※ 独立トップレベルパスにしない（単一state方式RTDB／本人＋承認顧問のみ閲覧の既存ルールに自動的に乗る）
 │
 └── sessions/{sessionNumber}       ← セッション資料マスタ（顧問のみ書込）
     ├── number: 1..49
@@ -406,7 +406,7 @@ match /databases/{database}/documents {
 │ メンタル状態分布(11月):     │
 │  良好:5 普通:4 不調:2 つらい:1│
 │                            │
-│ DIPCA推移グラフ ▼          │
+│ セルフチェック5軸推移 ▼     │
 └─────────────────────────┘
 ```
 
@@ -586,7 +586,7 @@ Stage 3 として、handball-analyzer 側も Firebase 対応に拡張し、CSV�
 - 呼吸法タイマー（2-3-15/4-7-8/ボックス）
 - イメージング誘導音声
 - プッシュ通知（次セッション・行動宣言リマインド）
-- DIPCA.3 デジタル入力
+- 心の5つの力 セルフチェック（自作・自己採点・5軸バー／**実装済**：マイ統計内・users/{uid}/state.selfChecks）
 
 ---
 

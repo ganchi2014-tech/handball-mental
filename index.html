@@ -342,6 +342,16 @@
     .izof-row { margin-bottom: 12px; }
     .izof-row .label { font-size: var(--fs-sm); color: var(--text-2); }
 
+    /* セルフチェック（心の5つの力） */
+    .sc-bar-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+    .sc-bar-label { flex:0 0 132px; font-size: var(--fs-sm); }
+    .sc-bar-track { flex:1; height:16px; background: rgba(0,0,0,0.25); border-radius:8px; overflow:hidden; }
+    .sc-bar-fill { height:100%; background: linear-gradient(90deg, var(--primary), var(--primary-dark)); border-radius:8px; transition: width .3s; }
+    .sc-bar-val { flex:0 0 50px; text-align:right; font-weight:700; }
+    .sc-bar-max { font-size:11px; color: var(--text-2); font-weight:400; }
+    .sc-axis { margin-top:16px; }
+    .sc-axis-head { font-weight:700; color: var(--primary); margin-bottom:8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+
     /* Result chips (勝負引) */
     .chip-group { display: flex; gap: 8px; }
     .chip {
@@ -578,7 +588,8 @@
         monthlyReviews: [],
         izofRecords: [],
         declarations: [],
-        sessionLogs: []
+        sessionLogs: [],
+        selfChecks: []
       };
     }
 
@@ -1002,6 +1013,9 @@
             {view === 'izof' && (
               <Izof state={state} update={update} showToast={showToast} />
             )}
+            {view === 'selfcheck' && (
+              <SelfCheck state={state} update={update} showToast={showToast} onNav={setView} />
+            )}
             {view === 'declaration' && (
               <Declarations state={state} update={update} showToast={showToast} />
             )}
@@ -1009,7 +1023,7 @@
               <Monthly state={state} update={update} showToast={showToast} />
             )}
             {view === 'stats' && !state.user.isCoach && (
-              <MyStats state={state} myGameStats={myGameStats} />
+              <MyStats state={state} myGameStats={myGameStats} onNav={setView} />
             )}
             {view === 'coach' && state.user.isCoach && (
               isApprovedCoach ? (
@@ -1433,6 +1447,11 @@
               <div className="tile-title">月の振り返り</div>
               <div className="tile-sub">月末に書く</div>
             </button>
+            <button className="quick-tile" onClick={() => onNav('selfcheck')}>
+              <span className="tile-icon">🧭</span>
+              <div className="tile-title">セルフチェック</div>
+              <div className="tile-sub">心の5つの力（年3回）</div>
+            </button>
           </div>
 
           {recentReflection && (
@@ -1715,6 +1734,166 @@
               </div>
             ))}
             <button className="btn" onClick={() => onSave(d)}>保存</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ====== セルフチェック（心の5つの力・自作・自己採点） ======
+    const SC_AXES = [
+      { key:'m1', name:'緊張コントロール', mod:'M1 呼吸', items:[
+        '試合前に緊張しても、自分なりに落ち着ける方だ',
+        '大事な場面でも、固くなりすぎずにいつもの動きができる',
+        'ミスや失点のあとでも、気持ちを切り替えてプレーを続けられる'] },
+      { key:'m2', name:'イメージ', mod:'M2 イメージ', items:[
+        '良いプレーの場面を、頭の中ではっきり思い浮かべられる',
+        '試合の前に、自分の動きを頭の中で再生してから臨むほうだ',
+        '苦手な場面でも、「決まる・うまくいく」姿を思い浮かべられる'] },
+      { key:'m3', name:'目標', mod:'M3 目標設定', items:[
+        '自分の課題と、目指すものがはっきりしている',
+        '目標を、今やるべき小さなことに分けて考えるほうだ',
+        '計画どおりにいかない時、目標を見直して立て直せる'] },
+      { key:'m4', name:'セルフトーク', mod:'M4 言葉', items:[
+        'ミスをしても、自分を責めすぎない',
+        '苦しい場面で、自分に「やれる」など前向きな言葉をかけている',
+        'うまくいかない時でも、「やれる」と思えることが多い'] },
+      { key:'m5', name:'コミュニケーション', mod:'M5 声・つながり', items:[
+        'コートで、自分から味方に声をかけている',
+        '仲間がミスした時、責めずに声をかけている',
+        '困った時、1人で抱えこまずに相談できる'] },
+    ];
+    const SC_NUM = ['①','②','③','④','⑤'];
+    const scRoundLabel = (r) => ({baseline:'1回目(6月)', midterm:'中間(1月)', final:'最終(6月)'}[r] || r);
+
+    function SelfCheckBars({ scores }) {
+      return (
+        <>
+          {SC_AXES.map((ax,i) => {
+            const v = (scores || {})[ax.key] || 0;
+            return (
+              <div key={ax.key} className="sc-bar-row">
+                <div className="sc-bar-label">{SC_NUM[i]} {ax.name}</div>
+                <div className="sc-bar-track"><div className="sc-bar-fill" style={{width:(v/15*100)+'%'}}></div></div>
+                <div className="sc-bar-val">{v}<span className="sc-bar-max">/15</span></div>
+              </div>
+            );
+          })}
+        </>
+      );
+    }
+
+    function SelfCheck({ state, update, showToast, onNav }) {
+      const records = state.selfChecks || [];
+      const [editing, setEditing] = useState(false);
+      const latest = records[0];
+
+      const save = (rec) => {
+        update({ selfChecks: [rec, ...records] });
+        setEditing(false);
+        showToast('保存しました');
+      };
+
+      return (
+        <>
+          <div className="section-h">心の5つの力 セルフチェック</div>
+          <div className="card">
+            <div className="card-title">🧭 ふだんの自分のクセを見る「地図」</div>
+            <div className="card-subtitle">
+              これは「その日の調子」(IZOF) ではなく「ふだんの自分」を見るもの。<br/>
+              合否や能力を決める検査ではありません。今の自分を知って、鍛える場所を選ぶための地図です。<br/>
+              数字は <b>自分の前回とだけ</b> 比べる・誰とも比べない・1回で決めつけない。
+            </div>
+          </div>
+
+          <button className="btn mb-16" onClick={() => setEditing(true)}>+ 新しくチェックする</button>
+
+          {latest ? (
+            <>
+              <div className="section-h">最新の結果 <span className="small">{latest.date}・{scRoundLabel(latest.round)}</span></div>
+              <div className="card">
+                <SelfCheckBars scores={latest.axisScores} />
+                <div className="text-small text-muted mt-16">
+                  低い＝ダメじゃない＝これから伸ばせる場所。高い＝今の武器。<br/>
+                  特に「セルフトーク」「コミュニケーション」が低くてしんどい時は、顧問・養護教諭・SC にいつでも言っていい。
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="empty"><div className="empty-icon">🧭</div><div>まだチェックがありません</div></div>
+          )}
+
+          {records.length > 1 && (
+            <>
+              <div className="section-h">これまでの推移（自分の中だけ）</div>
+              <div className="card">
+                {SC_AXES.map((ax,i) => (
+                  <div key={ax.key} className="stat-row">
+                    <span className="label">{SC_NUM[i]} {ax.name}</span>
+                    <span className="value">{records.slice().reverse().map(r => (r.axisScores||{})[ax.key]).join(' → ')}</span>
+                  </div>
+                ))}
+                <div className="text-small text-muted mt-16">上がることも、変わらない・下がることもある。それが普通。1回の数字で決めつけない。</div>
+              </div>
+            </>
+          )}
+
+          {editing && <SelfCheckEditor existing={records} onSave={save} onCancel={() => setEditing(false)} />}
+        </>
+      );
+    }
+
+    function SelfCheckEditor({ existing, onSave, onCancel }) {
+      const [round, setRound] = useState(existing.length === 0 ? 'baseline' : 'midterm');
+      const [items, setItems] = useState(Array(15).fill(0));
+      const set = (idx, v) => setItems(items.map((x,i) => i === idx ? v : x));
+
+      const submit = () => {
+        if (!items.every(v => v >= 1)) {
+          if (!confirm('まだ全部に数字がついていません。このまま保存しますか？')) return;
+        }
+        const axisScores = {};
+        SC_AXES.forEach((ax, ai) => { axisScores[ax.key] = (items[ai*3]||0) + (items[ai*3+1]||0) + (items[ai*3+2]||0); });
+        onSave({ id: uid(), createdAt: Date.now(), date: todayStr(), round, items, axisScores });
+      };
+
+      return (
+        <div className="modal-overlay" onClick={onCancel}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">心の5つの力 セルフチェック</div>
+              <button className="modal-close" onClick={onCancel}>×</button>
+            </div>
+            <div className="text-small text-muted mb-16">
+              1問ずつ、今の「ふだんの自分」に近い数字をえらぶ。 1=ほとんどない ／ 3=半分くらい ／ 5=いつもできている。<br/>
+              正直に・全部同じにならなくて普通。これは検査ではなく、自分を知る地図。
+            </div>
+            <div className="form-group">
+              <label>いつのチェック？</label>
+              <div className="chip-group">
+                {[['baseline','1回目(6月)'],['midterm','中間(1月)'],['final','最終(6月)']].map(([k,lab]) => (
+                  <div key={k} className={'chip ' + (round === k ? 'selected' : '')} onClick={() => setRound(k)}>{lab}</div>
+                ))}
+              </div>
+            </div>
+            {SC_AXES.map((ax, ai) => (
+              <div key={ax.key} className="sc-axis">
+                <div className="sc-axis-head">{SC_NUM[ai]} {ax.name}（{ax.mod}）</div>
+                {ax.items.map((it, ii) => {
+                  const idx = ai*3 + ii;
+                  return (
+                    <div key={idx} className="izof-row">
+                      <div className="label">{idx+1}. {it}</div>
+                      <div className="izof-grid">
+                        {[1,2,3,4,5].map(n => (
+                          <div key={n} className={'izof-cell ' + (items[idx] === n ? 'selected' : '')} onClick={() => set(idx, n)}>{n}</div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+            <button className="btn" onClick={submit}>保存</button>
           </div>
         </div>
       );
@@ -2075,6 +2254,7 @@
             reflections: s.reflections || [],
             izofRecords: s.izofRecords || [],
             declarations: s.declarations || [],
+            selfChecks: s.selfChecks || [],
             monthlyReviews: s.monthlyReviews || [],
             sessionLogs: s.sessionLogs || [],
             gameStats: (data && data.gameStats) || {},
@@ -2206,7 +2386,7 @@
             <div className="card-title">P3予定</div>
             <div className="card-subtitle">
               ・handball-analyzer CSV取込 → 各選手に配信<br/>
-              ・DIPCA.3 心理測定の管理<br/>
+              ・心の5つの力 セルフチェック（自作・自己採点・個人内の推移のみ）<br/>
               ・セキュリティルールの厳格化（選手間のデータ秘匿）
             </div>
           </div>
@@ -2371,6 +2551,15 @@
 
       return (
         <>
+          {(state.selfChecks && state.selfChecks.length > 0) && (
+            <>
+              <div className="section-h">心の5つの力（最新）</div>
+              <div className="card">
+                <SelfCheckBars scores={state.selfChecks[0].axisScores} />
+                <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={() => onNav && onNav('selfcheck')}>セルフチェックを開く →</button>
+              </div>
+            </>
+          )}
           <div className="section-h">マイ統計（試合データ）</div>
 
           {games.length === 0 ? (

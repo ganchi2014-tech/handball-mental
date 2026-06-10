@@ -43,14 +43,15 @@ const firebaseConfig = {
 
 「コンソールに進む」をクリック。
 
-## ステップ4: Firestore Database 有効化
+## ステップ4: Realtime Database 有効化
 
-1. 左メニュー「**構築**」→「**Firestore Database**」
-2. 「**データベースの作成**」をクリック
-3. **「本番環境モードで開始」** を選択（推奨）
-4. ロケーション: **`asia-northeast1`（東京）** を選択
+> ⚠ 本アプリは **Realtime Database（RTDB）** を使用します（旧版ドキュメントの Firestore 表記は誤り。実装は `firebase.database()` ＝ RTDB）。
+
+1. 左メニュー「**構築**」→「**Realtime Database**」
+2. 「**データベースを作成**」をクリック
+3. ロケーション: **`asia-southeast1`（シンガポール）** を選択（本番と同一）
+4. **「ロックモードで開始」** を選択（後でルールを貼る）
 5. 「**有効にする**」をクリック
-6. 数分待つ
 
 ## ステップ5: Authentication 有効化
 
@@ -60,24 +61,16 @@ const firebaseConfig = {
 4. 「**有効にする**」トグルON
 5. 「**保存**」
 
-## ステップ6: セキュリティルール（仮設定）
+## ステップ6: セキュリティルール（本番・厳格／要配慮個人情報の保護）
 
-1. Firestore Database → 「**ルール**」タブ
-2. 以下に書き換え（とりあえず開発用、後で厳格化）：
+> ⚠ **「認証済みなら全アクセス可（`auth != null`）」は使わない**。それだと選手が他の選手のメンタルデータ（振り返り・IZOF・行動宣言・**セルフチェック**等の要配慮個人情報）を読めてしまい、保護者同意書【3】「他選手のデータは見られない」に反します。
 
-```javascript
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /{document=**} {
-      // 開発中: 認証済みなら全アクセス可。本番化前に厳格化必須
-      allow read, write: if request.auth != null;
-    }
-  }
-}
-```
+1. Realtime Database → 「**ルール**」タブ
+2. リポジトリの **[`database.rules.json`](./database.rules.json)** の `"rules"` の中身を**そのまま貼り付け**て「**公開**」。
+   - 要点: `users/{uid}`（＝state配下の全データ。セルフチェック含む）は **本人 と 承認済み顧問（`/coaches/{uid}`）のみ read**、**本人のみ write**。`roster`/`matches` の書込みは承認顧問のみ。
+3. `database.rules.json` をリポジトリの**正本**として管理し、ルールを変更したら必ずこのファイルも更新する（口頭の「厳格化済」ではなく、ファイルで証跡を残す）。
 
-3. 「**公開**」をクリック
+> セルフチェックのスコアは `users/{uid}/state.selfChecks` に保存されるため、上記 `users/{uid}` のルールで**追加設定なしに本人＋承認顧問のみ**に限定されます。
 
 ## ステップ7: ドメイン許可（GitHub Pages 用）
 
@@ -92,7 +85,7 @@ service cloud.firestore {
 
 - [x] プロジェクト `handball-mental` 作成済
 - [x] Webアプリ登録済（firebaseConfig 取得済）
-- [x] Firestore Database 有効（東京リージョン）
+- [x] Realtime Database 有効（asia-southeast1）＋ database.rules.json を公開
 - [x] Authentication 匿名認証 有効
 - [x] セキュリティルール公開済
 - [x] `ganchi2014-tech.github.io` ドメイン許可済
@@ -113,7 +106,7 @@ const firebaseConfig = {
 };
 ```
 
-**※ apiKey は公開しても比較的安全**（Firestoreルールで保護される）ですが、念のためチャットで共有してください。
+**※ apiKey は公開しても比較的安全**（RTDBルールで保護される）ですが、念のためチャットで共有してください。
 
 ---
 
