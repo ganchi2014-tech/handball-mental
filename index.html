@@ -1964,6 +1964,13 @@
         { k: 'scene2', t: 'text', label: '④ 使う場面 2' },
         { k: 'whyNot', t: 'textarea', label: '⑤ おためし期間：続かなかった日の理由メモ（忘れた・疲れた・効果不明…なんでもOK）' },
       ], note: '毎日のチェックは【宣言】タブ（28日）で。チームルールはホームのチームボードに表示。' },
+      { id: 6, icon: '🎬', title: 'イメージ マイ・ルーティン', session: 'Session 6（7/23）M2イメージ', fields: [
+        { k: 'bestPlay', t: 'textarea', label: '① 自分のベストプレー（いつ・どこで・どんなプレー。これから決めたいプレーでもOK）' },
+        { k: 'senses', t: 'textarea', label: '② それを五感で（見えるもの・聞こえる音・体の感じ。単語の箇条書きでOK）' },
+        { k: 'routine', t: 'text', label: '③ 寝る前ルーティン自分版（例: 呼吸1サイクル→イメージ1分）' },
+        { k: 'vividness', t: 'choice', label: '④ 今日の鮮明度（自分メモ。低くて正常・反復で上がる）', options: ['1', '2', '3', '4', '5'] },
+        { k: 'request', t: 'textarea', label: '⑤ 次回(7/30)やりたいこと＋理由ひとこと（呼吸もう一回深く／イメージの続き／目標の話 など自由）' },
+      ], note: '行動宣言の更新は【宣言】タブで。鮮明度は誰とも比べない・自分の前回とだけ。' },
     ];
 
     function SessionWorks({ state, update, showToast, team }) {
@@ -2612,6 +2619,26 @@
                   <div className="right"><div className="score">{g.goals}</div><div className="sub">G</div></div>
                 </div>
               ))}
+            </>
+          )}
+
+          {p.sessionWorks && Object.keys(p.sessionWorks).length > 0 && (
+            <>
+              <div className="section-h">セッションワーク <span className="small">{Object.keys(p.sessionWorks).length}件</span></div>
+              {SESSION_WORKS.filter(w => p.sessionWorks[w.id]).map(w => {
+                const ans = p.sessionWorks[w.id];
+                return (
+                  <div key={w.id} className="card">
+                    <div className="card-title">{w.icon} {w.title}</div>
+                    {w.fields.filter(f => ans[f.k]).map(f => (
+                      <div key={f.k} className="stat-row">
+                        <span className="label" style={{flex:'0 0 45%'}}>{f.label.length > 22 ? f.label.slice(0,22) + '…' : f.label}</span>
+                        <span className="value" style={{textAlign:'right', whiteSpace:'pre-line'}}>{String(ans[f.k]).length > 80 ? String(ans[f.k]).slice(0,80) + '…' : ans[f.k]}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </>
           )}
 
