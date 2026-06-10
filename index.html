@@ -55,8 +55,8 @@
       --card: rgba(255,255,255,0.05);
       --card-hover: rgba(255,255,255,0.08);
       --border: rgba(255,255,255,0.1);
-      --primary: #ff3b5a;
-      --primary-dark: #c41e3a;
+      --primary: #2dd4bf;
+      --primary-dark: #14b8a6;
       --accent: #4ecdc4;
       --accent-dark: #2c8a82;
       --warning: #fbbf24;
@@ -103,7 +103,7 @@
       align-items: center;
       justify-content: center;
       padding: 24px;
-      background: radial-gradient(circle at 50% 20%, rgba(255,59,90,0.15) 0%, transparent 60%);
+      background: radial-gradient(circle at 50% 20%, rgba(45,212,191,0.15) 0%, transparent 60%);
     }
     .login h1 {
       font-size: var(--fs-3xl);
@@ -165,7 +165,7 @@
       border-radius: 10px;
       font-size: var(--fs-md);
       font-weight: 600;
-      box-shadow: 0 4px 12px rgba(255,59,90,0.3);
+      box-shadow: 0 4px 12px rgba(45,212,191,0.3);
       transition: transform 0.1s, box-shadow 0.2s;
     }
     .btn:active { transform: scale(0.98); }
@@ -389,7 +389,7 @@
       background: var(--primary);
       border-radius: 50%;
       cursor: pointer;
-      box-shadow: 0 2px 6px rgba(255,59,90,0.5);
+      box-shadow: 0 2px 6px rgba(45,212,191,0.5);
     }
 
     /* 4-week tracker */
@@ -1271,7 +1271,7 @@
                       onClick={() => !e.linked && setSelectedRosterId(e.id)}
                       style={{
                         padding:'10px 12px', margin:'4px 0', borderRadius:6, cursor: e.linked ? 'not-allowed' : 'pointer',
-                        background: selectedRosterId === e.id ? 'rgba(255,59,90,0.2)' : (e.linked ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.05)'),
+                        background: selectedRosterId === e.id ? 'rgba(45,212,191,0.2)' : (e.linked ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.05)'),
                         border: selectedRosterId === e.id ? '1px solid var(--primary)' : '1px solid transparent',
                         opacity: e.linked ? 0.4 : 1
                       }}>
