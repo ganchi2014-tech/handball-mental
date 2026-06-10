@@ -1,5 +1,4 @@
 {
-  "_comment": "Realtime Database セキュリティルール（本番）。選手の個人データ（state＝振り返り/IZOF/行動宣言/月次/セルフチェック等の要配慮個人情報）は本人と承認済み顧問のみ閲覧可。同意書【3】『他選手のデータは見られない』の証跡。Firebase Console → Realtime Database → ルール に貼って公開し、本ファイルをリポジトリの正本とする。selfChecks は users/{uid}/state 配下のため追加ルール不要。",
   "rules": {
     ".read": false,
     ".write": false,
