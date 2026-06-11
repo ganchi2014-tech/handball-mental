@@ -4,6 +4,7 @@
     ".write": false,
 
     "users": {
+      ".read": "auth != null && root.child('coaches').child(auth.uid).exists()",
       "$uid": {
         ".read": "auth != null && (auth.uid === $uid || root.child('coaches').child(auth.uid).exists())",
         "state": {
@@ -42,7 +43,7 @@
 
     "matches": {
       ".read": "auth != null && root.child('coaches').child(auth.uid).exists()",
-      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+      ".write": "auth != null"
     }
   }
 }
