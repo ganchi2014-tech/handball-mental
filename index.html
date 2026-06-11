@@ -668,6 +668,22 @@
         if (!fbDB) return;
         return fbDB.ref('team/voiceNotes/' + id).remove();
       },
+      // ----- 個人宛てアドバイスメモ（本人＋顧問のみ閲覧・顧問のみ書込） -----
+      addCoachNote: async (targetUid, note) => {
+        if (!fbDB || !targetUid) return;
+        const id = fbDB.ref('users/' + targetUid + '/coachNotes').push().key;
+        return fbDB.ref('users/' + targetUid + '/coachNotes/' + id).set({ ...note, createdAt: firebase.database.ServerValue.TIMESTAMP });
+      },
+      delCoachNote: async (targetUid, id) => {
+        if (!fbDB || !targetUid) return;
+        return fbDB.ref('users/' + targetUid + '/coachNotes/' + id).remove();
+      },
+      subscribeMyCoachNotes: (uid, callback) => {
+        if (!fbDB || !uid) return () => {};
+        const ref = fbDB.ref('users/' + uid + '/coachNotes');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
+        return () => ref.off('value', handler);
+      },
       // ----- 名簿マスター（analyzer と共有） -----
       subscribeRoster: (callback) => {
         if (!fbDB) return () => {};
@@ -844,6 +860,14 @@
       useEffect(() => {
         if (!authUid) { setMyGameStats({}); return; }
         const unsub = storage.subscribeMyGameStats(authUid, setMyGameStats);
+        return unsub;
+      }, [authUid]);
+
+      // ── 自分宛ての顧問メモ購読
+      const [myCoachNotes, setMyCoachNotes] = useState({});
+      useEffect(() => {
+        if (!authUid) { setMyCoachNotes({}); return; }
+        const unsub = storage.subscribeMyCoachNotes(authUid, setMyCoachNotes);
         return unsub;
       }, [authUid]);
 
@@ -1026,10 +1050,12 @@
             syncStatus={syncStatus}
             onLogout={handleLogout}
             onCoachToggle={() => update({ user: { ...state.user, isCoach: !state.user.isCoach } })}
+            team={team}
           />
           <div className="content">
-            {view === 'home' && <Home state={state} onNav={setView} team={team} update={update} />}
+            {view === 'home' && <Home state={state} onNav={setView} team={team} update={update} myCoachNotes={myCoachNotes} />}
             {view === 'breath' && <BreathingGuide />}
+            {view === 'coachnotes' && <CoachNotesView notes={myCoachNotes} />}
             {view === 'reflection' && (
               <Reflections
                 state={state}
@@ -1350,7 +1376,7 @@
     }
 
     // ====== Header ======
-    function Header({ user, syncStatus, onLogout, onCoachToggle }) {
+    function Header({ user, syncStatus, onLogout, onCoachToggle, team }) {
       const [menuOpen, setMenuOpen] = useState(false);
       const syncDot = {
         cache:   { color: '#94a3b8', title: 'ローカルのみ' },
@@ -1376,6 +1402,7 @@
             </div>
             <div className="header-sub">
               {user.grade}年 / {user.position}
+              {team && team.aikotoba && <span style={{marginLeft:10, color:'var(--primary)', fontWeight:700}}>🏳「{team.aikotoba}」</span>}
             </div>
           </div>
           <div className="header-actions">
@@ -1429,7 +1456,7 @@
     }
 
     // ====== Home ======
-    function Home({ state, onNav, team, update }) {
+    function Home({ state, onNav, team, update, myCoachNotes }) {
       const today = new Date();
       const hour = today.getHours();
       const greeting = hour < 11 ? 'おはよう' : hour < 18 ? 'こんにちは' : 'お疲れ様';
@@ -1455,6 +1482,19 @@
                     update({ declarations: state.declarations.map(x => x.id === activeDecl.id ? { ...x, checks: [...(x.checks || []), ds] } : x) });
                   }}>✓ 今日やった！（いま {declCheckedDays} / 28日）</button>
                 )}
+              </div>
+            );
+          })()}
+
+          {myCoachNotes && Object.keys(myCoachNotes).length > 0 && (() => {
+            const vn = Object.values(myCoachNotes).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 3);
+            return (
+              <div className="card" style={{cursor:'pointer'}} onClick={() => onNav('coachnotes')}>
+                <div className="card-title">💬 顧問からのメモ（あなた宛て）</div>
+                {vn.map((n, i) => (
+                  <div key={i} className="text-small" style={{padding:'2px 0'}}>{n.date}　{n.text}</div>
+                ))}
+                <div className="text-small text-muted" style={{marginTop:6}}>タップで全部見返す →</div>
               </div>
             );
           })()}
@@ -1513,10 +1553,16 @@
             </button>
           </div>
 
-          {team && (team.aikotoba || team.breathingRule || team.norms || team.tryNow || team.voiceNotes) && (
+          {team && (team.theme || team.aikotoba || team.breathingRule || team.norms || team.tryNow || team.voiceNotes) && (
             <>
               <div className="section-h">チームボード</div>
               <div className="card">
+                {team.theme && (
+                  <div style={{padding:'4px 0 10px', borderBottom:'1px solid var(--border)', marginBottom:8}}>
+                    <span className="text-small" style={{color:'var(--text-2)'}}>今日のテーマ</span>
+                    <div style={{fontSize:18, fontWeight:800, color:'var(--primary)'}}>{team.theme}</div>
+                  </div>
+                )}
                 {team.aikotoba && <div className="stat-row"><span className="label">合言葉</span><span className="value">{team.aikotoba}</span></div>}
                 {team.breathingRule && <div className="stat-row"><span className="label">2-3-15ルール</span><span className="value">{team.breathingRule}</span></div>}
                 {team.norms && <div className="stat-row"><span className="label">コートの約束</span><span className="value" style={{whiteSpace:'pre-line', textAlign:'right'}}>{team.norms}</span></div>}
@@ -2214,7 +2260,7 @@
       const [open, setOpen] = useState(false);
       const [v, setV] = useState({});
       const openEdit = () => {
-        setV({ aikotoba: team.aikotoba || '', breathingRule: team.breathingRule || '', norms: team.norms || '', tryNow: team.tryNow || '' });
+        setV({ aikotoba: team.aikotoba || '', breathingRule: team.breathingRule || '', norms: team.norms || '', tryNow: team.tryNow || '', theme: team.theme || '' });
         setOpen(true);
       };
       const save = async () => {
@@ -2227,7 +2273,8 @@
           {!open ? (
             <>
               <div className="card-subtitle">
-                合言葉: {team.aikotoba || '未設定'}<br/>
+                今日のテーマ: {team.theme || '未設定'}<br/>
+                合言葉: {team.aikotoba || '未設定'}（ヘッダーに常時表示）<br/>
                 2-3-15ルール: {team.breathingRule || '未設定'}<br/>
                 コートの約束: {team.norms || '未設定'}<br/>
                 今のTry: {team.tryNow || '未設定'}
@@ -2236,7 +2283,8 @@
             </>
           ) : (
             <>
-              <div className="form-group"><label>チーム合言葉（S1で選手が決定）</label><input value={v.aikotoba} onChange={e => setV({...v, aikotoba: e.target.value})} /></div>
+              <div className="form-group"><label>今日のテーマ（全員のホームの一番上に出る。例: 今週は「声」）</label><input value={v.theme} onChange={e => setV({...v, theme: e.target.value})} /></div>
+              <div className="form-group"><label>チーム合言葉（S1で選手が決定・ヘッダーに常時表示）</label><input value={v.aikotoba} onChange={e => setV({...v, aikotoba: e.target.value})} /></div>
               <div className="form-group"><label>2-3-15ルール（S3で選手が決定。例: 試合20分前に3サイクル・高覚醒型は1〜2でOK）</label><input value={v.breathingRule} onChange={e => setV({...v, breathingRule: e.target.value})} /></div>
               <div className="form-group"><label>コートの約束（S14で共同作成・改行区切り）</label><textarea rows={3} value={v.norms} onChange={e => setV({...v, norms: e.target.value})} /></div>
               <div className="form-group"><label>今のTry（チームレトロで決定）</label><input value={v.tryNow} onChange={e => setV({...v, tryNow: e.target.value})} /></div>
@@ -2248,27 +2296,75 @@
       );
     }
 
-    // ====== 試合中の声かけログ（顧問が記録・全員のホームに表示） ======
-    function CoachVoiceLog({ team, showToast }) {
+    // ====== 顧問からの個人宛てメモ（選手側の閲覧ビュー） ======
+    function CoachNotesView({ notes }) {
+      const list = Object.entries(notes || {}).map(([id, n]) => ({ id, ...n })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      return (
+        <>
+          <div className="section-h">💬 顧問からのメモ（あなた宛て）</div>
+          <div className="card">
+            <div className="card-subtitle">顧問があなた個人に宛てて書いたアドバイス。ここでいつでも見返せる（他の選手には見えない）。</div>
+          </div>
+          {list.length === 0 ? (
+            <div className="empty"><div className="empty-icon">💬</div><div>まだメモはありません</div></div>
+          ) : list.map(n => (
+            <div key={n.id} className="coach-list-item">
+              <div className="sub">{n.date}</div>
+              <div className="title" style={{marginTop:4}}>{n.text}</div>
+            </div>
+          ))}
+        </>
+      );
+    }
+
+    function PlayerNoteAdd({ uid }) {
       const [text, setText] = useState('');
+      return (
+        <div style={{display:'flex', gap:8, marginBottom:8}}>
+          <input value={text} onChange={e => setText(e.target.value)} placeholder="この選手へのアドバイスを記録（本人だけが見られる）" style={{flex:1}} />
+          <button className="btn" style={{width:'auto', padding:'10px 18px'}} onClick={async () => {
+            if (!text.trim()) return;
+            try { await storage.addCoachNote(uid, { date: todayStr(), text: text.trim() }); setText(''); }
+            catch (e) { console.warn('[coachNote]', e); }
+          }}>記録</button>
+        </div>
+      );
+    }
+
+    // ====== 試合中の声かけログ（顧問が記録・全員のホームに表示） ======
+    function CoachVoiceLog({ team, players, showToast }) {
+      const [text, setText] = useState('');
+      const [target, setTarget] = useState('all');
       const notes = Object.entries(team.voiceNotes || {}).map(([id, n]) => ({ id, ...n })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       const add = async () => {
         if (!text.trim()) return;
         try {
-          await storage.addTeamVoice({ date: todayStr(), text: text.trim() });
+          if (target === 'all') {
+            await storage.addTeamVoice({ date: todayStr(), text: text.trim() });
+            showToast('全体への声かけを記録（全員のホームに表示）');
+          } else {
+            await storage.addCoachNote(target, { date: todayStr(), text: text.trim() });
+            const p = (players || []).find(pp => pp.uid === target);
+            showToast((p ? p.profile.name : '選手') + ' さん宛てに記録（本人だけが見られる）');
+          }
           setText('');
-          showToast('声かけを記録しました');
-        } catch (e) { console.warn('[voice]', e); showToast('保存できません（Firebaseルールに /team が必要）'); }
+        } catch (e) { console.warn('[voice]', e); showToast('保存できません（Firebaseルールの適用が必要）'); }
       };
       return (
         <div className="card">
-          <div className="card-title">📣 試合中の声かけログ（全選手のホームに公開）</div>
+          <div className="card-title">📣 声かけ・アドバイスメモ（宛先を選んで記録）</div>
           <div className="card-subtitle">
-            試合・練習中の声かけをその場でメモ→全員が見られる。<br/>
+            <b>全体</b>＝全員のホームのチームボードに表示／<b>選手名</b>＝その選手だけが見られる（いつでも見返せる）。<br/>
             教材と同じ言葉（次いこ／整えていこう）を使えているかの自己点検にも（平日アライメント①②）。
           </div>
           <div style={{display:'flex', gap:8, marginBottom:8}}>
-            <input value={text} onChange={e => setText(e.target.value)} placeholder="例: 切替、次いこ！／ええぞ、その声！" style={{flex:1}} />
+            <select value={target} onChange={e => setTarget(e.target.value)} style={{flex:'0 0 36%', background:'rgba(0,0,0,0.3)', color:'var(--text-1)', border:'1px solid var(--border)', borderRadius:8, padding:'10px 8px'}}>
+              <option value="all">📣 全体</option>
+              {(players || []).map(p => (
+                <option key={p.uid} value={p.uid}>💬 {p.profile.name}</option>
+              ))}
+            </select>
+            <input value={text} onChange={e => setText(e.target.value)} placeholder="例: 切替、次いこ！／今日のサイドの戻り、良かったぞ" style={{flex:1}} />
             <button className="btn" style={{width:'auto', padding:'10px 18px'}} onClick={add}>記録</button>
           </div>
           {notes.slice(0, 5).map(n => (
@@ -2640,6 +2736,7 @@
             declarations: s.declarations || [],
             selfChecks: s.selfChecks || [],
             sessionWorks: s.sessionWorks || {},
+            coachNotes: (data && data.coachNotes) || {},
             monthlyReviews: s.monthlyReviews || [],
             sessionLogs: s.sessionLogs || [],
             gameStats: (data && data.gameStats) || {},
@@ -2719,7 +2816,7 @@
           </div>
 
           <TeamBoardEdit team={team || {}} saveTeam={saveTeam} showToast={showToast} />
-          <CoachVoiceLog team={team || {}} showToast={showToast} />
+          <CoachVoiceLog team={team || {}} players={players} showToast={showToast} />
 
           {allConsults.length > 0 && (
             <>
@@ -2795,8 +2892,21 @@
             <div className="card-title">プロフィール</div>
             <div className="stat-row"><span className="label">学年</span><span className="value">{p.profile.grade}年</span></div>
             <div className="stat-row"><span className="label">ポジション</span><span className="value">{p.profile.position}</span></div>
-            <div className="stat-row"><span className="label">IZOF型</span><span className="value">{p.profile.izofType || '未設定'}</span></div>
+            <div className="stat-row"><span className="label">IZOF型</span><span className="value">{normIzofType(p.profile.izofType) || '未設定'}</span></div>
             <div className="stat-row"><span className="label">登録日</span><span className="value">{p.profile.createdAt ? new Date(p.profile.createdAt).toLocaleDateString('ja-JP') : '-'}</span></div>
+          </div>
+
+          <div className="section-h">💬 この選手へのメモ（本人と顧問のみ閲覧）</div>
+          <div className="card">
+            <PlayerNoteAdd uid={p.uid} />
+            {Object.entries(p.coachNotes || {}).map(([id, n]) => ({ id, ...n })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 8).map(n => (
+              <div key={n.id} className="stat-row">
+                <span className="label">{n.date}</span>
+                <span className="value" style={{flex:1, textAlign:'right', marginLeft:8}}>{n.text}</span>
+                <span style={{marginLeft:10, cursor:'pointer', color:'var(--text-3)'}} onClick={async () => { try { await storage.delCoachNote(p.uid, n.id); } catch (e) {} }}>×</span>
+              </div>
+            ))}
+            {Object.keys(p.coachNotes || {}).length === 0 && <div className="text-small text-muted">まだメモなし。練習・試合で気づいたことをその場で。</div>}
           </div>
 
           {/* 試合統計（analyzer由来） */}

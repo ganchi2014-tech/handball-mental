@@ -11,6 +11,9 @@
         },
         "gameStats": {
           ".write": "auth != null && (auth.uid === $uid || root.child('coaches').child(auth.uid).exists())"
+        },
+        "coachNotes": {
+          ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
         }
       }
     },
