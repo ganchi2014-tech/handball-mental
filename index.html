@@ -2798,7 +2798,7 @@
       const totalMonthly     = players.reduce((s, p) => s + p.monthlyReviews.length, 0);
 
       if (selected) {
-        return <PlayerDetail player={selected} onBack={() => setSelected(null)} />;
+        return <PlayerDetail player={selected} onBack={() => setSelected(null)} showToast={showToast} />;
       }
 
       if (tab === 'roster') {
@@ -2911,7 +2911,7 @@
     }
 
     // ====== Player Detail (顧問が個別選手の詳細を見る) ======
-    function PlayerDetail({ player, onBack }) {
+    function PlayerDetail({ player, onBack, showToast }) {
       const p = player;
       return (
         <>
@@ -3080,7 +3080,7 @@
     }
 
     // ====== My Stats (選手用: 自分のCSV取込済データを表示) ======
-    function MyStats({ state, myGameStats }) {
+    function MyStats({ state, myGameStats, onNav }) {
       const [selectedGame, setSelectedGame] = useState(null);
 
       const { games, total } = useMemo(() => aggregateGameStats(myGameStats), [myGameStats]);
