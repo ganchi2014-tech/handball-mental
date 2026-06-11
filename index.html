@@ -2299,6 +2299,13 @@
     // ====== 顧問からの個人宛てメモ（選手側の閲覧ビュー） ======
     function CoachNotesView({ notes }) {
       const list = Object.entries(notes || {}).map(([id, n]) => ({ id, ...n })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      const byMonth = list.reduce((acc, n) => {
+        const key = (n.date || '').slice(0, 7); // "2026-06"
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(n);
+        return acc;
+      }, {});
+      const months = Object.keys(byMonth).sort((a, b) => b.localeCompare(a));
       return (
         <>
           <div className="section-h">💬 顧問からのメモ（あなた宛て）</div>
@@ -2307,12 +2314,24 @@
           </div>
           {list.length === 0 ? (
             <div className="empty"><div className="empty-icon">💬</div><div>まだメモはありません</div></div>
-          ) : list.map(n => (
-            <div key={n.id} className="coach-list-item">
-              <div className="sub">{n.date}</div>
-              <div className="title" style={{marginTop:4}}>{n.text}</div>
-            </div>
-          ))}
+          ) : months.map(m => {
+            const [y, mo] = m.split('-');
+            return (
+              <div key={m}>
+                <div style={{display:'flex', alignItems:'center', gap:8, margin:'16px 0 8px'}}>
+                  <div style={{flex:1, height:1, background:'var(--border)'}} />
+                  <div style={{fontSize:12, color:'var(--text-2)', fontWeight:700, whiteSpace:'nowrap'}}>{y}年{parseInt(mo)}月</div>
+                  <div style={{flex:1, height:1, background:'var(--border)'}} />
+                </div>
+                {byMonth[m].map(n => (
+                  <div key={n.id} className="coach-list-item">
+                    <div className="sub">{n.date}</div>
+                    <div className="title" style={{marginTop:4}}>{n.text}</div>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
         </>
       );
     }
