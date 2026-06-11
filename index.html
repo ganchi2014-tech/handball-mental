@@ -1019,7 +1019,8 @@
             onCoachToggle={() => update({ user: { ...state.user, isCoach: !state.user.isCoach } })}
           />
           <div className="content">
-            {view === 'home' && <Home state={state} onNav={setView} team={team} />}
+            {view === 'home' && <Home state={state} onNav={setView} team={team} update={update} />}
+            {view === 'breath' && <BreathingGuide />}
             {view === 'reflection' && (
               <Reflections
                 state={state}
@@ -1419,7 +1420,7 @@
     }
 
     // ====== Home ======
-    function Home({ state, onNav, team }) {
+    function Home({ state, onNav, team, update }) {
       const today = new Date();
       const hour = today.getHours();
       const greeting = hour < 11 ? 'おはよう' : hour < 18 ? 'こんにちは' : 'お疲れ様';
@@ -1431,6 +1432,23 @@
         <>
           <h2 className="greeting">{greeting}、{state.user.name}</h2>
           <p className="greeting-sub">{today.getMonth()+1}月{today.getDate()}日 ({['日','月','火','水','木','金','土'][today.getDay()]})</p>
+
+          {activeDecl && update && (() => {
+            const ds = todayStr();
+            const done = (activeDecl.checks || []).includes(ds);
+            return (
+              <div className="card" style={{borderLeft: done ? '3px solid var(--success)' : '3px solid var(--primary)'}}>
+                <div className="card-subtitle" style={{marginBottom:8}}>今日の宣言：{activeDecl.declaration}</div>
+                {done ? (
+                  <div style={{fontWeight:700, color:'var(--success)'}}>✓ 今日もチェック済み（{declCheckedDays} / 28日）</div>
+                ) : (
+                  <button className="btn" style={{width:'100%'}} onClick={() => {
+                    update({ declarations: state.declarations.map(x => x.id === activeDecl.id ? { ...x, checks: [...(x.checks || []), ds] } : x) });
+                  }}>✓ 今日やった！（いま {declCheckedDays} / 28日）</button>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="summary-stats">
             <div className="stat-card">
@@ -1478,6 +1496,11 @@
               <span className="tile-icon">📒</span>
               <div className="tile-title">セッションワーク</div>
               <div className="tile-sub">紙の代わりにここに書く</div>
+            </button>
+            <button className="quick-tile" onClick={() => onNav('breath')}>
+              <span className="tile-icon">🌬</span>
+              <div className="tile-title">呼吸ガイド</div>
+              <div className="tile-sub">寝る前1サイクルからOK</div>
             </button>
           </div>
 
@@ -1566,6 +1589,7 @@
           {editing && (
             <ReflectionEditor
               initial={editing}
+              izofRecords={state.izofRecords}
               onSave={save}
               onCancel={() => setEditing(null)}
               onDelete={editing.id ? () => del(editing.id) : null}
@@ -1575,7 +1599,8 @@
       );
     }
 
-    function ReflectionEditor({ initial, onSave, onCancel, onDelete }) {
+    function ReflectionEditor({ initial, izofRecords, onSave, onCancel, onDelete }) {
+      const [autoIzof, setAutoIzof] = useState(false);
       const [d, setD] = useState({
         gameDate: initial.gameDate || todayStr(),
         opponent: initial.opponent || '',
@@ -1588,7 +1613,19 @@
         coachWord: initial.coachWord || '',
         preGameIzof: initial.preGameIzof || { tension: 3, focus: 3, confidence: 3, condition: 3 }
       });
-      const setIzof = (k, v) => setD({ ...d, preGameIzof: { ...d.preGameIzof, [k]: v }});
+      const setIzof = (k, v) => { setAutoIzof(false); setD({ ...d, preGameIzof: { ...d.preGameIzof, [k]: v }}); };
+
+      // 試合前にIZOFタブで記録していれば自動転記（新規作成時のみ・手で触ったら解除）
+      useEffect(() => {
+        if (initial.id) return;
+        const rec = (izofRecords || []).find(r => r.date === d.gameDate);
+        if (rec) {
+          setD(prev => ({ ...prev, preGameIzof: { tension: rec.tension, focus: rec.focus, confidence: rec.confidence, condition: rec.condition } }));
+          setAutoIzof(true);
+        } else {
+          setAutoIzof(false);
+        }
+      }, [d.gameDate]);
 
       return (
         <div className="modal-overlay" onClick={onCancel}>
@@ -1641,7 +1678,10 @@
             </div>
 
             <div className="form-group">
-              <label>試合前のIZOF（1=最低 〜 5=最高）</label>
+              <label>試合前のIZOF（1=最低 〜 5=最高）{autoIzof && <span style={{color:'var(--accent)', fontWeight:700}}>　✓ 試合前の記録から自動入力</span>}</label>
+              <div className="text-small text-muted" style={{marginBottom:8}}>
+                試合前に🎯IZOFタブで記録していれば自動で入る。無ければ試合前を思い出して（だいたいでOK）。
+              </div>
               {[
                 {k:'tension', name:'緊張度'},
                 {k:'focus', name:'集中度'},
@@ -2056,6 +2096,65 @@
             <button className="btn" onClick={() => onSave(v)}>保存</button>
           </div>
         </div>
+      );
+    }
+
+    // ====== 呼吸ガイド（寝る前の自習用・視覚タイマー） ======
+    const BREATH_TECHS = [
+      { id: '2315', name: '2-3-15', sub: '試合前の儀式・深く鎮める', phases: [['吸う（鼻から）', 2], ['ためる', 3], ['吐く（細く長〜く）', 15]] },
+      { id: '478', name: '4-7-8', sub: '寝る前・強めに落とす（座って／布団で）', phases: [['吸う（鼻から）', 4], ['止める', 7], ['吐く（口から）', 8]] },
+      { id: '446', name: '4-4-6（やさしい）', sub: '4-7-8の「止める7秒」がきつい人はこちら', phases: [['吸う（鼻から）', 4], ['止める', 4], ['吐く（口から）', 6]] },
+      { id: 'box', name: 'ボックス 4-4-4-4', sub: '試合中・ベンチで「整える」（目で四角をなぞる）', phases: [['吸う', 4], ['止める', 4], ['吐く', 4], ['止める', 4]] },
+    ];
+    function BreathingGuide() {
+      const [tech, setTech] = useState(BREATH_TECHS[0]);
+      const [st, setSt] = useState(null); // null=停止中 / {pi, left, cycles}
+      useEffect(() => {
+        if (!st) return;
+        const t = setInterval(() => {
+          setSt(prev => {
+            if (!prev) return prev;
+            if (prev.left > 1) return { ...prev, left: prev.left - 1 };
+            const np = (prev.pi + 1) % tech.phases.length;
+            return { pi: np, left: tech.phases[np][1], cycles: prev.cycles + (np === 0 ? 1 : 0) };
+          });
+        }, 1000);
+        return () => clearInterval(t);
+      }, [st !== null, tech]);
+      const start = () => setSt({ pi: 0, left: tech.phases[0][1], cycles: 0 });
+      const stop = () => setSt(null);
+      return (
+        <>
+          <div className="section-h">呼吸ガイド</div>
+          <div className="card">
+            <div className="card-subtitle">
+              寝る前の自習用。<b>無理しない・息は8割・座ってOK</b>。<br/>
+              気分が悪い・ふらっとしたら、すぐやめて普通の呼吸（それが正解）。
+            </div>
+          </div>
+          <div className="chip-group" style={{flexWrap:'wrap'}}>
+            {BREATH_TECHS.map(t => (
+              <div key={t.id} className={'chip ' + (tech.id === t.id ? 'selected' : '')} onClick={() => { setSt(null); setTech(t); }}>{t.name}</div>
+            ))}
+          </div>
+          <div className="text-small text-muted" style={{margin:'8px 0 16px'}}>{tech.sub}</div>
+          <div className="card" style={{textAlign:'center', padding:'28px 16px'}}>
+            {st ? (
+              <>
+                <div style={{fontSize:16, color:'var(--text-2)'}}>{st.cycles + 1}サイクル目</div>
+                <div style={{fontSize:32, fontWeight:800, margin:'6px 0'}}>{tech.phases[st.pi][0]}</div>
+                <div style={{fontSize:64, fontWeight:800, color:'var(--primary)', lineHeight:1.1}}>{st.left}</div>
+                <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={stop}>おわる（{st.cycles}サイクルできた）</button>
+              </>
+            ) : (
+              <>
+                <div style={{fontSize:15, color:'var(--text-2)', marginBottom:14}}>{tech.phases.map(p => p[0].split('（')[0] + p[1]).join(' → ')} 秒</div>
+                <button className="btn" style={{width:'100%'}} onClick={start}>はじめる（1サイクルからでOK）</button>
+              </>
+            )}
+          </div>
+          <div className="text-small text-muted">高覚醒型は下げすぎ注意——使うのは「明らかに過剰」の時だけ・1〜2サイクルで整えるだけ。</div>
+        </>
       );
     }
 
@@ -2566,11 +2665,12 @@
           ) : players.map(p => {
             const lastRef = p.reflections[0];
             const lastMonthly = p.monthlyReviews[0];
+            const adecl = p.declarations.find(dd => !dd.completed);
             return (
               <div key={p.uid} className="list-item" onClick={() => setSelected(p)} style={{cursor:'pointer'}}>
                 <div>
                   <div className="title">{p.profile.name}</div>
-                  <div className="sub">{p.profile.grade}年 / {p.profile.position} / IZOF: {normIzofType(p.profile.izofType) || '未設定'}</div>
+                  <div className="sub">{p.profile.grade}年 / {p.profile.position} / IZOF: {normIzofType(p.profile.izofType) || '未設定'}{adecl ? ` / ✅宣言${(adecl.checks || []).length}日` : ''}</div>
                   {lastRef && <div className="sub" style={{marginTop:4, color:'var(--text-2)'}}>直近: vs {lastRef.opponent} ({lastRef.result}) {lastRef.gameDate}</div>}
                   {p.statsGames && p.statsGames.length > 0 && (
                     <div className="sub" style={{marginTop:4, color:'var(--accent)'}}>📈 {p.statsGames.length}試合 / {p.statsTotal.goals}G / 決定率{p.statsTotal.goalRate}%</div>
