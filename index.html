@@ -659,6 +659,15 @@
         if (!fbDB) return;
         return fbDB.ref('team').update({ ...data, updatedAt: firebase.database.ServerValue.TIMESTAMP });
       },
+      addTeamVoice: async (note) => {
+        if (!fbDB) return;
+        const id = fbDB.ref('team/voiceNotes').push().key;
+        return fbDB.ref('team/voiceNotes/' + id).set({ ...note, createdAt: firebase.database.ServerValue.TIMESTAMP });
+      },
+      delTeamVoice: async (id) => {
+        if (!fbDB) return;
+        return fbDB.ref('team/voiceNotes/' + id).remove();
+      },
       // ----- 名簿マスター（analyzer と共有） -----
       subscribeRoster: (callback) => {
         if (!fbDB) return () => {};
@@ -1504,7 +1513,7 @@
             </button>
           </div>
 
-          {team && (team.aikotoba || team.breathingRule || team.norms || team.tryNow) && (
+          {team && (team.aikotoba || team.breathingRule || team.norms || team.tryNow || team.voiceNotes) && (
             <>
               <div className="section-h">チームボード</div>
               <div className="card">
@@ -1512,6 +1521,17 @@
                 {team.breathingRule && <div className="stat-row"><span className="label">2-3-15ルール</span><span className="value">{team.breathingRule}</span></div>}
                 {team.norms && <div className="stat-row"><span className="label">コートの約束</span><span className="value" style={{whiteSpace:'pre-line', textAlign:'right'}}>{team.norms}</span></div>}
                 {team.tryNow && <div className="stat-row"><span className="label">今のTry</span><span className="value">{team.tryNow}</span></div>}
+                {team.voiceNotes && (() => {
+                  const vn = Object.values(team.voiceNotes).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 3);
+                  return vn.length ? (
+                    <div style={{marginTop:10, paddingTop:8, borderTop:'1px solid var(--border)'}}>
+                      <div className="text-small" style={{color:'var(--text-2)', marginBottom:4}}>📣 監督の声かけ（直近）</div>
+                      {vn.map((n, i) => (
+                        <div key={i} className="text-small" style={{padding:'2px 0'}}>{n.date}　「{n.text}」</div>
+                      ))}
+                    </div>
+                  ) : null;
+                })()}
               </div>
             </>
           )}
@@ -1745,6 +1765,37 @@
               {izofType === '高覚醒型' && '→ 興奮状態でベスト。アップビート・ハイタッチ'}
             </div>
           </div>
+
+          {(() => {
+            const games = (state.reflections || []).filter(r => r.preGameIzof && r.selfScore != null);
+            const best = games.filter(r => r.selfScore >= 8);
+            const pool = best.length >= 3 ? best.slice(0, 5) : (games.length >= 3 ? [...games].sort((a, b) => b.selfScore - a.selfScore).slice(0, 3) : []);
+            if (pool.length < 3) {
+              return (
+                <div className="card">
+                  <div className="card-title">🧭 型のヒント（自動）</div>
+                  <div className="card-subtitle">
+                    試合前にIZOFを記録→試合後に振り返りを書くと、<b>調子の良い試合が3件</b>たまった時点で、自分のデータから型のヒントが出ます（いま {games.length} 件）。<br/>
+                    決め方の基準: ベスト時の緊張 <b>1-2＝低覚醒型／3＝中間型／4-5＝高覚醒型</b>。迷ったら中間型でスタート。
+                  </div>
+                </div>
+              );
+            }
+            const ts = pool.map(r => r.preGameIzof.tension);
+            const sorted = [...ts].sort((a, b) => a - b);
+            const med = sorted[Math.floor(sorted.length / 2)];
+            const hintType = med <= 2 ? '低覚醒型' : (med >= 4 ? '高覚醒型' : '中間型');
+            return (
+              <div className="card">
+                <div className="card-title">🧭 型のヒント（自動・自分の試合データから）</div>
+                <div className="card-subtitle">
+                  調子の良かった試合{pool.length}件の「試合前の緊張度」: {ts.join(' / ')} → <b>{hintType}寄り</b><br/>
+                  （基準: ベスト時の緊張 1-2＝低覚醒型／3＝中間型／4-5＝高覚醒型）<br/>
+                  これは提案。<b>決めるのは自分</b>——上の型チップで選んで保存（自動では変えません）。
+                </div>
+              </div>
+            );
+          })()}
 
           <button className="btn mb-16" onClick={() => setAdding(true)}>+ 今の状態を記録</button>
 
@@ -1985,7 +2036,7 @@
         { k: 'bestState', t: 'textarea', label: '② その時の自分（緊張・集中・自信・体調はどうだった？）' },
         { k: 'worst', t: 'textarea', label: '③ ワーストだった試合・場面' },
         { k: 'worstState', t: 'textarea', label: '④ その時の自分' },
-        { k: 'izofType', t: 'choice', label: '⑤ 自分のIZOF型（→IZOFタブにも設定しよう）', options: ['低覚醒型', '中間型', '高覚醒型'] },
+        { k: 'izofType', t: 'choice', label: '⑤ 自分のIZOF型（決め方: ベストの時の緊張が 1-2→低覚醒型／3→中間型／4-5→高覚醒型。迷ったら中間型でスタート。→IZOFタブにも設定）', options: ['低覚醒型', '中間型', '高覚醒型'] },
       ], note: '行動宣言は【宣言】タブ、試合ノートは【振り返り】タブで。' },
       { id: 2, icon: '🧮', title: '結果の方程式『ぼくの式』', session: 'Session 2（6/25）', fields: [
         { k: 'do1', t: 'text', label: '① 何をするか 1（技術・戦術・体力／具体的に）' },
@@ -2193,6 +2244,41 @@
               <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={() => setOpen(false)}>キャンセル</button>
             </>
           )}
+        </div>
+      );
+    }
+
+    // ====== 試合中の声かけログ（顧問が記録・全員のホームに表示） ======
+    function CoachVoiceLog({ team, showToast }) {
+      const [text, setText] = useState('');
+      const notes = Object.entries(team.voiceNotes || {}).map(([id, n]) => ({ id, ...n })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      const add = async () => {
+        if (!text.trim()) return;
+        try {
+          await storage.addTeamVoice({ date: todayStr(), text: text.trim() });
+          setText('');
+          showToast('声かけを記録しました');
+        } catch (e) { console.warn('[voice]', e); showToast('保存できません（Firebaseルールに /team が必要）'); }
+      };
+      return (
+        <div className="card">
+          <div className="card-title">📣 試合中の声かけログ（全選手のホームに公開）</div>
+          <div className="card-subtitle">
+            試合・練習中の声かけをその場でメモ→全員が見られる。<br/>
+            教材と同じ言葉（次いこ／整えていこう）を使えているかの自己点検にも（平日アライメント①②）。
+          </div>
+          <div style={{display:'flex', gap:8, marginBottom:8}}>
+            <input value={text} onChange={e => setText(e.target.value)} placeholder="例: 切替、次いこ！／ええぞ、その声！" style={{flex:1}} />
+            <button className="btn" style={{width:'auto', padding:'10px 18px'}} onClick={add}>記録</button>
+          </div>
+          {notes.slice(0, 5).map(n => (
+            <div key={n.id} className="stat-row">
+              <span className="label">{n.date}</span>
+              <span className="value" style={{flex:1, textAlign:'right', marginLeft:8}}>{n.text}</span>
+              <span style={{marginLeft:10, cursor:'pointer', color:'var(--text-3)'}} onClick={async () => { try { await storage.delTeamVoice(n.id); } catch (e) {} }}>×</span>
+            </div>
+          ))}
+          {notes.length > 5 && <div className="text-small text-muted">…他 {notes.length - 5} 件（直近5件のみ表示）</div>}
         </div>
       );
     }
@@ -2633,6 +2719,7 @@
           </div>
 
           <TeamBoardEdit team={team || {}} saveTeam={saveTeam} showToast={showToast} />
+          <CoachVoiceLog team={team || {}} showToast={showToast} />
 
           {allConsults.length > 0 && (
             <>
