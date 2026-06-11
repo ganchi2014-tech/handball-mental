@@ -590,7 +590,8 @@
         declarations: [],
         sessionLogs: [],
         selfChecks: [],
-        sessionWorks: {}
+        sessionWorks: {},
+        localUpdatedAt: 0
       };
     }
 
@@ -842,6 +843,8 @@
       const lastCloudJsonRef = useRef('');
       const writeTimerRef = useRef(null);
       const firstCloudLoadRef = useRef(false);
+      const stateRef = useRef(state);
+      useEffect(() => { stateRef.current = state; }, [state]);
 
       // ── 名簿マスター・顧問承認リスト購読（常時）
       useEffect(() => {
@@ -943,8 +946,16 @@
               setSyncStatus('synced');
               return;
             }
+            // ローカルの方が新しい（オフライン中の変更）→ クラウドで上書きしない
+            const localTs = (stateRef.current && stateRef.current.localUpdatedAt) || 0;
+            const cloudTs = cloudState.localUpdatedAt || 0;
+            if (localTs > cloudTs) {
+              lastCloudJsonRef.current = ''; // useEffectに再アップロードを促す
+              setSyncStatus('synced');
+              return;
+            }
             lastCloudJsonRef.current = json;
-            setState(prev => ({ ...prev, ...cloudState }));
+            setState(prev => ({ ...defaultState(), ...prev, ...cloudState }));
             setSyncStatus('synced');
           } else {
             // クラウドに無い → 初回アップロード
@@ -1033,7 +1044,7 @@
         );
       }
 
-      const update = (patch) => setState(prev => ({ ...prev, ...patch }));
+      const update = (patch) => setState(prev => ({ ...prev, ...patch, localUpdatedAt: Date.now() }));
       const handleLogout = async () => {
         try { if (fbAuth) await fbAuth.signOut(); } catch (e) { console.warn(e); }
         localStorage.removeItem(PIN_KEY);
@@ -2320,7 +2331,7 @@
               <div key={m}>
                 <div style={{display:'flex', alignItems:'center', gap:8, margin:'16px 0 8px'}}>
                   <div style={{flex:1, height:1, background:'var(--border)'}} />
-                  <div style={{fontSize:12, color:'var(--text-2)', fontWeight:700, whiteSpace:'nowrap'}}>{y}年{parseInt(mo)}月</div>
+                  <div style={{fontSize:12, color:'var(--text-2)', fontWeight:700, whiteSpace:'nowrap'}}>{y}年{parseInt(mo, 10)}月</div>
                   <div style={{flex:1, height:1, background:'var(--border)'}} />
                 </div>
                 {byMonth[m].map(n => (
