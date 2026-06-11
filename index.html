@@ -2401,7 +2401,7 @@
             <div key={n.id} className="stat-row">
               <span className="label">{n.date}</span>
               <span className="value" style={{flex:1, textAlign:'right', marginLeft:8}}>{n.text}</span>
-              <span style={{marginLeft:10, cursor:'pointer', color:'var(--text-3)'}} onClick={async () => { try { await storage.delTeamVoice(n.id); } catch (e) {} }}>×</span>
+              <span style={{marginLeft:10, cursor:'pointer', color:'var(--text-3)'}} onClick={async () => { try { await storage.delTeamVoice(n.id); } catch (e) { showToast('削除できませんでした'); } }}>×</span>
             </div>
           ))}
           {notes.length > 5 && <div className="text-small text-muted">…他 {notes.length - 5} 件（直近5件のみ表示）</div>}
@@ -2933,7 +2933,7 @@
               <div key={n.id} className="stat-row">
                 <span className="label">{n.date}</span>
                 <span className="value" style={{flex:1, textAlign:'right', marginLeft:8}}>{n.text}</span>
-                <span style={{marginLeft:10, cursor:'pointer', color:'var(--text-3)'}} onClick={async () => { try { await storage.delCoachNote(p.uid, n.id); } catch (e) {} }}>×</span>
+                <span style={{marginLeft:10, cursor:'pointer', color:'var(--text-3)'}} onClick={async () => { try { await storage.delCoachNote(p.uid, n.id); } catch (e) { showToast('削除できませんでした'); } }}>×</span>
               </div>
             ))}
             {Object.keys(p.coachNotes || {}).length === 0 && <div className="text-small text-muted">まだメモなし。練習・試合で気づいたことをその場で。</div>}
@@ -3498,12 +3498,14 @@
       const importAll = async () => {
         if (pending.length === 0) return;
         if (!confirm(`未取込の ${pending.length} 試合をすべて配信しますか？`)) return;
+        let saved = 0;
         for (const m of pending) {
           setBusyId(m.id);
-          await importMatch(m.id, m.raw);
+          const res = await importMatch(m.id, m.raw);
+          if (res && res.ok) saved += res.savedPlayers;
         }
         setBusyId(null);
-        showToast(`${pending.length} 試合を一括配信しました`);
+        showToast(`${pending.length} 試合を一括配信（計${saved}名分）`);
       };
 
       return (
