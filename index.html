@@ -707,6 +707,10 @@
         if (!fbDB || !rosterId || !authUid) return;
         return fbDB.ref('rosterToUid/' + rosterId).set(authUid);
       },
+      unlinkRoster: async (rosterId) => {
+        if (!fbDB || !rosterId) return;
+        return fbDB.ref('rosterToUid/' + rosterId).remove();
+      },
       subscribeRosterToUid: (callback) => {
         if (!fbDB) return () => {};
         const ref = fbDB.ref('rosterToUid');
@@ -817,7 +821,9 @@
 
     // ====== Helpers ======
     const uid = () => Math.random().toString(36).slice(2, 11) + Date.now().toString(36);
-    const todayStr = () => new Date().toISOString().slice(0, 10);
+    // ローカル日付（JST）。toISOString はUTCのため朝9時前に前日となるバグがあった
+    const dateStr = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const todayStr = () => dateStr(new Date());
     const fmtDate = (s) => {
       if (!s) return '';
       const [y,m,d] = s.split('-');
@@ -884,13 +890,29 @@
       // ── クラウド試合を各選手の gameStats に取込（ワンボタン/自動共通）
       const importMatch = useCallback(async (matchId, matchData) => {
         if (!matchData || !matchData.rows) return { ok: false, reason: 'no rows' };
+        // analyzer表示名(①関山)・姓 → rosterId（守備行のGK解決用）
+        const nameToRid = {};
+        Object.entries(roster || {}).forEach(([rid2, data]) => {
+          if (!data) return;
+          nameToRid[rosterDisplayName(data)] = rid2;
+          if (data.surname && !nameToRid[data.surname]) nameToRid[data.surname] = rid2;
+        });
         const byRoster = {};
+        const push = (rid2, row) => {
+          if (!byRoster[rid2]) byRoster[rid2] = {};
+          byRoster[rid2][Object.keys(byRoster[rid2]).length] = row;
+        };
         for (const row of matchData.rows) {
+          if (row.mode === 'defense') {
+            // 守備行は当該GKに配信（セーブ率・被シュート統計用）
+            const gkName = row.gk || '';
+            const gkRid = nameToRid[gkName] || nameToRid[parseAnalyzerName(gkName).surname] || null;
+            if (gkRid) push(gkRid, row);
+            continue;
+          }
           const rid = row.rosterId;
           if (!rid) continue;
-          if (!byRoster[rid]) byRoster[rid] = {};
-          const idx = Object.keys(byRoster[rid]).length;
-          byRoster[rid][idx] = row;
+          push(rid, row);
         }
         let savedPlayers = 0, skippedNoUid = 0;
         const gameId = matchId;
@@ -904,7 +926,7 @@
         }
         await storage.markMatchImported(matchId, authUid);
         return { ok: true, savedPlayers, skippedNoUid };
-      }, [rosterToUid, authUid]);
+      }, [rosterToUid, authUid, roster]);
 
       // ── 自動取込（トグルON時、未取込試合を自動配信）
       const isCoachNow = state.user && state.user.isCoach;
@@ -1016,6 +1038,7 @@
             <Login
               roster={roster}
               rosterToUid={rosterToUid}
+              authUid={authUid}
               onLogin={async (userInput) => {
                 try {
                   let uid = authUid;
@@ -1046,6 +1069,7 @@
 
       const update = (patch) => setState(prev => ({ ...prev, ...patch, localUpdatedAt: Date.now() }));
       const handleLogout = async () => {
+        if (!confirm('ログアウトしますか？\n\n⚠ ログアウトするとこの端末のアカウントは復元できません。再登録時は名簿から自分を選び直す形になります（クラウドの記録は顧問側に残ります）。\n通常はログアウト不要——アプリを閉じるだけでOKです。')) return;
         try { if (fbAuth) await fbAuth.signOut(); } catch (e) { console.warn(e); }
         localStorage.removeItem(PIN_KEY);
         localStorage.removeItem(NAME_KEY);
@@ -1061,6 +1085,7 @@
             syncStatus={syncStatus}
             onLogout={handleLogout}
             onCoachToggle={() => update({ user: { ...state.user, isCoach: !state.user.isCoach } })}
+            canCoach={state.user.isCoach || isApprovedCoach}
             team={team}
           />
           <div className="content">
@@ -1121,7 +1146,7 @@
     }
 
     // ====== Login ======
-    function Login({ onLogin, roster, rosterToUid }) {
+    function Login({ onLogin, roster, rosterToUid, authUid }) {
       const [pin, setPin] = useState('');
       const [savedPin, setSavedPin] = useState(localStorage.getItem(PIN_KEY) || '');
       const [savedName, setSavedName] = useState(localStorage.getItem(NAME_KEY) || '');
@@ -1134,20 +1159,24 @@
 
       // 名簿リスト（active && 未連携優先）
       const rosterList = useMemo(() => {
-        const arr = Object.entries(roster || {}).map(([id, data]) => ({
-          id,
-          ...data,
-          grade: computeGrade(data.enrollmentYear),
-          displayName: rosterDisplayName(data),
-          linked: !!(rosterToUid && rosterToUid[id])
-        })).filter(e => e.active !== false);
+        const arr = Object.entries(roster || {}).map(([id, data]) => {
+          const linkedUid = (rosterToUid && rosterToUid[id]) || null;
+          return {
+            id,
+            ...data,
+            grade: computeGrade(data.enrollmentYear),
+            displayName: rosterDisplayName(data),
+            linked: !!linkedUid,
+            linkedToMe: !!(linkedUid && authUid && linkedUid === authUid)
+          };
+        }).filter(e => e.active !== false);
         arr.sort((a, b) => {
           if (a.linked !== b.linked) return a.linked ? 1 : -1; // 未連携を上に
           if (a.grade !== b.grade) return a.grade - b.grade;
           return (a.surname || '').localeCompare(b.surname || '', 'ja');
         });
         return arr;
-      }, [roster, rosterToUid]);
+      }, [roster, rosterToUid, authUid]);
 
       const filtered = filterGrade === 'all' ? rosterList : rosterList.filter(e => e.grade === Number(filterGrade));
       const selectedEntry = rosterList.find(e => e.id === selectedRosterId);
@@ -1156,8 +1185,8 @@
       const handleRegisterAsPlayer = async () => {
         if (!selectedEntry) { alert('名簿から自分を選択してください'); return; }
         if (!pin || pin.length !== 4) { alert('4桁PINを入力してください'); return; }
-        if (selectedEntry.linked) {
-          if (!confirm('この選手は既に別端末で登録されています。\n上書きしますか？（前の端末からはログアウトされます）')) return;
+        if (selectedEntry.linked && !selectedEntry.linkedToMe) {
+          if (!confirm('「' + (selectedEntry.fullName || selectedEntry.surname) + '」は既に別の端末で登録されています。\n\n自分の機種変更・再登録なら「OK」（この端末が新しい本人の端末になります。以前の記録は顧問に相談）。\n他人の枠なら「キャンセル」してください。')) return;
         }
         setBusy(true);
         const hash = hashPin(pin);
@@ -1337,16 +1366,17 @@
                 <div style={{maxHeight:300, overflowY:'auto', border:'1px solid var(--border)', borderRadius:8, padding:4}}>
                   {filtered.map(e => (
                     <div key={e.id}
-                      onClick={() => !e.linked && setSelectedRosterId(e.id)}
+                      onClick={() => setSelectedRosterId(e.id)}
                       style={{
-                        padding:'10px 12px', margin:'4px 0', borderRadius:6, cursor: e.linked ? 'not-allowed' : 'pointer',
-                        background: selectedRosterId === e.id ? 'rgba(45,212,191,0.2)' : (e.linked ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.05)'),
+                        padding:'10px 12px', margin:'4px 0', borderRadius:6, cursor: 'pointer',
+                        background: selectedRosterId === e.id ? 'rgba(45,212,191,0.2)' : (e.linked && !e.linkedToMe ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.05)'),
                         border: selectedRosterId === e.id ? '1px solid var(--primary)' : '1px solid transparent',
-                        opacity: e.linked ? 0.4 : 1
+                        opacity: e.linked && !e.linkedToMe ? 0.55 : 1
                       }}>
-                      <div style={{fontSize:'15px', fontWeight: e.linked ? 'normal' : 'bold'}}>
+                      <div style={{fontSize:'15px', fontWeight: e.linked && !e.linkedToMe ? 'normal' : 'bold'}}>
                         {e.displayName} {e.fullName && <span className="text-small text-muted">{e.fullName}</span>}
-                        {e.linked && <span className="text-small text-muted" style={{marginLeft:8}}>(登録済)</span>}
+                        {e.linkedToMe ? <span className="text-small" style={{marginLeft:8, color:'var(--primary)'}}>(この端末で登録済み)</span>
+                          : e.linked ? <span className="text-small text-muted" style={{marginLeft:8}}>(別端末で登録済み)</span> : null}
                       </div>
                       <div className="text-small text-muted">
                         {e.grade > 0 && e.grade <= 3 ? `${e.grade}年` : ''}
@@ -1387,7 +1417,7 @@
     }
 
     // ====== Header ======
-    function Header({ user, syncStatus, onLogout, onCoachToggle, team }) {
+    function Header({ user, syncStatus, onLogout, onCoachToggle, canCoach, team }) {
       const [menuOpen, setMenuOpen] = useState(false);
       const syncDot = {
         cache:   { color: '#94a3b8', title: 'ローカルのみ' },
@@ -1420,10 +1450,12 @@
             <button className="btn-ghost" onClick={() => setMenuOpen(!menuOpen)}>⋯</button>
             {menuOpen && (
               <div style={{position:'absolute', top:60, right:16, background:'var(--bg-2)', border:'1px solid var(--border)', borderRadius:10, padding:8, zIndex:50}}>
-                <button className="btn-ghost" style={{display:'block', width:'100%', textAlign:'left'}} onClick={() => { onCoachToggle(); setMenuOpen(false); }}>
-                  {user.isCoach ? '選手モードに戻る' : '顧問モードに切替'}
-                </button>
-                <button className="btn-ghost" style={{display:'block', width:'100%', textAlign:'left'}} onClick={() => { setMenuOpen(false); if(confirm('ログアウトしますか？')) onLogout(); }}>
+                {canCoach && (
+                  <button className="btn-ghost" style={{display:'block', width:'100%', textAlign:'left'}} onClick={() => { onCoachToggle(); setMenuOpen(false); }}>
+                    {user.isCoach ? '選手モードに戻る' : '顧問モードに切替'}
+                  </button>
+                )}
+                <button className="btn-ghost" style={{display:'block', width:'100%', textAlign:'left'}} onClick={() => { setMenuOpen(false); onLogout(); }}>
                   ログアウト
                 </button>
               </div>
@@ -1483,10 +1515,15 @@
           {activeDecl && update && (() => {
             const ds = todayStr();
             const done = (activeDecl.checks || []).includes(ds);
+            const endD = new Date(activeDecl.startDate + 'T00:00:00');
+            endD.setDate(endD.getDate() + 27);
+            const ended = ds > dateStr(endD);
             return (
               <div className="card" style={{borderLeft: done ? '3px solid var(--success)' : '3px solid var(--primary)'}}>
                 <div className="card-subtitle" style={{marginBottom:8}}>今日の宣言：{activeDecl.declaration}</div>
-                {done ? (
+                {ended ? (
+                  <button className="btn btn-secondary" style={{width:'100%'}} onClick={() => onNav('declaration')}>🎉 28日間おつかれさま！【宣言】で完了して次へ →</button>
+                ) : done ? (
                   <div style={{fontWeight:700, color:'var(--success)'}}>✓ 今日もチェック済み（{declCheckedDays} / 28日）</div>
                 ) : (
                   <button className="btn" style={{width:'100%'}} onClick={() => {
@@ -1688,16 +1725,17 @@
         mentalFinding: initial.mentalFinding || '',
         nextTask: initial.nextTask || '',
         coachWord: initial.coachWord || '',
+        izofSource: initial.izofSource || null, // 'auto'(IZOFタブから転記) | 'manual'(手入力) | null(デフォルト値のまま=型ヒントに使わない)
         preGameIzof: initial.preGameIzof || { tension: 3, focus: 3, confidence: 3, condition: 3 }
       });
-      const setIzof = (k, v) => { setAutoIzof(false); setD({ ...d, preGameIzof: { ...d.preGameIzof, [k]: v }}); };
+      const setIzof = (k, v) => { setAutoIzof(false); setD({ ...d, izofSource: 'manual', preGameIzof: { ...d.preGameIzof, [k]: v }}); };
 
       // 試合前にIZOFタブで記録していれば自動転記（新規作成時のみ・手で触ったら解除）
       useEffect(() => {
         if (initial.id) return;
         const rec = (izofRecords || []).find(r => r.date === d.gameDate);
         if (rec) {
-          setD(prev => ({ ...prev, preGameIzof: { tension: rec.tension, focus: rec.focus, confidence: rec.confidence, condition: rec.condition } }));
+          setD(prev => ({ ...prev, izofSource: 'auto', preGameIzof: { tension: rec.tension, focus: rec.focus, confidence: rec.confidence, condition: rec.condition } }));
           setAutoIzof(true);
         } else {
           setAutoIzof(false);
@@ -1705,7 +1743,7 @@
       }, [d.gameDate]);
 
       return (
-        <div className="modal-overlay" onClick={onCancel}>
+        <div className="modal-overlay" onClick={() => { if (confirm('入力中の内容は保存されません。閉じますか？')) onCancel(); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">{initial.id ? '振り返り編集' : '新規振り返り'}</div>
@@ -1824,7 +1862,7 @@
           </div>
 
           {(() => {
-            const games = (state.reflections || []).filter(r => r.preGameIzof && r.selfScore != null);
+            const games = (state.reflections || []).filter(r => r.preGameIzof && r.izofSource && r.selfScore != null);
             const best = games.filter(r => r.selfScore >= 8);
             const pool = best.length >= 3 ? best.slice(0, 5) : (games.length >= 3 ? [...games].sort((a, b) => b.selfScore - a.selfScore).slice(0, 3) : []);
             if (pool.length < 3) {
@@ -1888,7 +1926,7 @@
       const set = (k,v) => setD({...d, [k]:v});
 
       return (
-        <div className="modal-overlay" onClick={onCancel}>
+        <div className="modal-overlay" onClick={() => { if (confirm('入力中の内容は保存されません。閉じますか？')) onCancel(); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">IZOF記録</div>
@@ -2030,7 +2068,13 @@
     }
 
     function SelfCheckEditor({ existing, onSave, onCancel }) {
-      const [round, setRound] = useState(existing.length === 0 ? 'baseline' : 'midterm');
+      // 月から回を推定: 12-2月=中間(1月) / それ以外は初回なければbaseline、あればfinal
+      const guessRound = () => {
+        const m = new Date().getMonth() + 1;
+        if (m === 12 || m <= 2) return 'midterm';
+        return existing.length === 0 ? 'baseline' : 'final';
+      };
+      const [round, setRound] = useState(guessRound());
       const [items, setItems] = useState(Array(15).fill(0));
       const set = (idx, v) => setItems(items.map((x,i) => i === idx ? v : x));
 
@@ -2044,7 +2088,7 @@
       };
 
       return (
-        <div className="modal-overlay" onClick={onCancel}>
+        <div className="modal-overlay" onClick={() => { if (confirm('入力中の内容は保存されません。閉じますか？')) onCancel(); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">心の5つの力 セルフチェック</div>
@@ -2165,9 +2209,14 @@
               initial={works[editing.id] || {}}
               onCancel={() => setEditing(null)}
               onSave={(vals) => {
-                update({ sessionWorks: { ...works, [editing.id]: { ...vals, updatedAt: Date.now() } } });
+                const patch = { sessionWorks: { ...works, [editing.id]: { ...vals, updatedAt: Date.now() } } };
+                // S1 IZOF発見ワークの⑤型選択は user.izofType にも反映（二重入力をなくす）
+                if (editing.id === 1 && vals.izofType && vals.izofType !== state.user.izofType) {
+                  patch.user = { ...state.user, izofType: vals.izofType };
+                }
+                update(patch);
                 setEditing(null);
-                showToast('保存しました');
+                showToast(editing.id === 1 && vals.izofType ? '保存しました（IZOF型をプロフィールにも設定）' : '保存しました');
               }}
             />
           )}
@@ -2179,7 +2228,7 @@
       const [v, setV] = useState(initial);
       const set = (k, val) => setV({ ...v, [k]: val });
       return (
-        <div className="modal-overlay" onClick={onCancel}>
+        <div className="modal-overlay" onClick={() => { if (confirm('入力中の内容は保存されません。閉じますか？')) onCancel(); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">{work.icon} {work.title}</div>
@@ -2493,7 +2542,7 @@
         for (let dd = 0; dd < 7; dd++) {
           const dt = new Date(start);
           dt.setDate(start.getDate() + w*7 + dd);
-          const ds = dt.toISOString().slice(0,10);
+          const ds = dateStr(dt);
           days.push(ds);
         }
         weeks.push(days);
@@ -2508,21 +2557,23 @@
           <div className="card-subtitle">開始: {d.startDate} ／ 達成 {totalChecked} / 28日</div>
           <div className="week-grid">
             <div className="week-label"></div>
-            {['月','火','水','木','金','土','日'].map(w => <div key={w} className="week-label">{w}</div>)}
+            {Array.from({length: 7}, (_, i) => ['日','月','火','水','木','金','土'][(start.getDay() + i) % 7]).map((w, i) => <div key={i} className="week-label">{w}</div>)}
             {weeks.map((days, wi) => (
               <React.Fragment key={wi}>
                 <div className="week-label">第{wi+1}週</div>
                 {days.map(ds => {
                   const checked = checks.includes(ds);
                   const isToday = ds === today;
+                  const isFuture = ds > today;
                   return (
                     <div
                       key={ds}
                       className={'day-cell ' + (checked ? 'checked' : '') + (isToday ? ' today' : '')}
-                      onClick={() => onToggle(ds)}
+                      style={isFuture ? {opacity: 0.35, cursor: 'default'} : undefined}
+                      onClick={() => { if (!isFuture) onToggle(ds); }}
                       title={ds}
                     >
-                      {checked ? '✓' : new Date(ds).getDate()}
+                      {checked ? '✓' : parseInt(ds.slice(8, 10), 10)}
                     </div>
                   );
                 })}
@@ -2544,7 +2595,7 @@
         'マイナスの口グセを1つ封印'
       ];
       return (
-        <div className="modal-overlay" onClick={onCancel}>
+        <div className="modal-overlay" onClick={() => { if (confirm('入力中の内容は保存されません。閉じますか？')) onCancel(); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">行動宣言</div>
@@ -2614,7 +2665,7 @@
     }
 
     function MonthlyEditor({ initial, onSave, onCancel }) {
-      const ym = initial.yearMonth || new Date().toISOString().slice(0,7);
+      const ym = initial.yearMonth || todayStr().slice(0,7);
       const [d, setD] = useState({
         yearMonth: ym,
         practiceMotivation: initial.practiceMotivation || 7,
@@ -2632,7 +2683,7 @@
         setD({...d, achievements: a});
       };
       return (
-        <div className="modal-overlay" onClick={onCancel}>
+        <div className="modal-overlay" onClick={() => { if (confirm('入力中の内容は保存されません。閉じますか？')) onCancel(); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">月1自己評価</div>
@@ -2899,11 +2950,11 @@
           })}
 
           <div className="card mt-16">
-            <div className="card-title">P3予定</div>
+            <div className="card-title">実装済みの仕組み</div>
             <div className="card-subtitle">
-              ・handball-analyzer CSV取込 → 各選手に配信<br/>
-              ・心の5つの力 セルフチェック（自作・自己採点・個人内の推移のみ）<br/>
-              ・セキュリティルールの厳格化（選手間のデータ秘匿）
+              ・handball-analyzer 連携 → クラウド取込で各選手に配信<br/>
+              ・心の5つの力 セルフチェック（自作・個人内の推移のみ）<br/>
+              ・セキュリティルール厳格化済（選手間のデータ秘匿）
             </div>
           </div>
         </>
@@ -3051,17 +3102,27 @@
       const games = Object.entries(myGameStats || {}).map(([gameId, rows]) => {
         const rowArr = Object.values(rows || {});
         let shots = 0, goals = 0, missed = 0, turnovers = 0;
+        let saves = 0, conceded = 0; // GK: 守備行（自分がGKだった被シュート）
         let firstDate = '', opponent = '';
         rowArr.forEach(r => {
           if (!firstDate && r.date) firstDate = r.date;
           if (!opponent && r.opponent) opponent = r.opponent;
-          if (r.mode === 'attack') {
+          if (r.mode === 'defense') {
+            // GK配信行: save=セーブ / goal=失点（枠内のみセーブ率の分母）
+            if (r.result === 'save') saves++;
+            else if (r.result === 'goal') conceded++;
+            return;
+          }
+          // TOは mode='attack', result='turnover' で届く——シュートに数えない
+          if (r.result === 'turnover') {
+            turnovers++;
+          } else if (r.mode === 'attack') {
             shots++;
             if (r.result === 'goal') goals++;
             else missed++;
           }
-          if (r.mode === 'turnover') turnovers++;
         });
+        const faced = saves + conceded;
         return {
           gameId,
           date: firstDate,
@@ -3069,13 +3130,21 @@
           rowCount: rowArr.length,
           shots, goals, missed, turnovers,
           goalRate: shots > 0 ? Math.round(goals / shots * 100) : 0,
+          saves, conceded, faced,
+          saveRate: faced > 0 ? Math.round(saves / faced * 100) : 0,
           rows: rowArr
         };
       });
       games.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-      let shots = 0, goals = 0, missed = 0, turnovers = 0;
-      games.forEach(g => { shots += g.shots; goals += g.goals; missed += g.missed; turnovers += g.turnovers; });
-      const total = { shots, goals, missed, turnovers, goalRate: shots > 0 ? Math.round(goals / shots * 100) : 0 };
+      let shots = 0, goals = 0, missed = 0, turnovers = 0, saves = 0, conceded = 0;
+      games.forEach(g => { shots += g.shots; goals += g.goals; missed += g.missed; turnovers += g.turnovers; saves += g.saves; conceded += g.conceded; });
+      const faced = saves + conceded;
+      const total = {
+        shots, goals, missed, turnovers,
+        goalRate: shots > 0 ? Math.round(goals / shots * 100) : 0,
+        saves, conceded, faced,
+        saveRate: faced > 0 ? Math.round(saves / faced * 100) : 0
+      };
       return { games, total };
     }
 
@@ -3146,6 +3215,17 @@
                 </div>
               </div>
 
+              {total.faced > 0 && (
+                <div className="card mt-16">
+                  <div className="card-title">🧤 GK累計</div>
+                  <div className="summary-stats" style={{marginTop:12}}>
+                    <div className="stat-card"><div className="num">{total.saves}</div><div className="label">セーブ</div></div>
+                    <div className="stat-card"><div className="num">{total.faced}</div><div className="label">枠内被シュート</div></div>
+                    <div className="stat-card"><div className="num">{total.saveRate}%</div><div className="label">セーブ率</div></div>
+                  </div>
+                </div>
+              )}
+
               <div className="section-h">試合別</div>
               {games.map(g => {
                 const hasReflection = !!reflectionsByDate[g.date];
@@ -3155,17 +3235,17 @@
                       <div className="title">vs {g.opponent}</div>
                       <div className="sub">{g.date}</div>
                       <div className="sub" style={{marginTop:4}}>
-                        {g.goals}G / {g.shots}S
-                        {g.goalRate > 0 && ` (${g.goalRate}%)`}
-                        {g.turnovers > 0 && ` / TO${g.turnovers}`}
+                        {g.faced > 0
+                          ? `🧤 ${g.saves}セーブ / 枠内${g.faced}本 (${g.saveRate}%)` + (g.shots > 0 ? ` ・ ${g.goals}G/${g.shots}S` : '')
+                          : <>{g.goals}G / {g.shots}S{g.goalRate > 0 && ` (${g.goalRate}%)`}{g.turnovers > 0 && ` / TO${g.turnovers}`}</>}
                       </div>
                       {hasReflection && (
                         <div className="sub" style={{marginTop:4, color:'var(--accent)'}}>📝 メンタル振り返り有</div>
                       )}
                     </div>
                     <div className="right">
-                      <div className="score">{g.goals}</div>
-                      <div className="sub">G</div>
+                      <div className="score">{g.faced > 0 ? g.saves : g.goals}</div>
+                      <div className="sub">{g.faced > 0 ? 'SV' : 'G'}</div>
                     </div>
                   </div>
                 );
@@ -3179,7 +3259,7 @@
     function GameDetail({ game, reflection, onBack }) {
       // コース別集計
       const courseStats = {};
-      game.rows.filter(r => r.mode === 'attack').forEach(r => {
+      game.rows.filter(r => r.mode === 'attack' && r.result !== 'turnover').forEach(r => {
         const k = r.course || '(未分類)';
         if (!courseStats[k]) courseStats[k] = { shots: 0, goals: 0 };
         courseStats[k].shots++;
@@ -3202,6 +3282,18 @@
             <div className="stat-row mt-16"><span className="label">外し</span><span className="value">{game.missed} 本</span></div>
             <div className="stat-row"><span className="label">ターンオーバー</span><span className="value">{game.turnovers} 回</span></div>
           </div>
+
+          {game.faced > 0 && (
+            <div className="card mt-16">
+              <div className="card-title">🧤 GKとしてのこの試合</div>
+              <div className="summary-stats" style={{marginTop:12}}>
+                <div className="stat-card"><div className="num">{game.saves}</div><div className="label">セーブ</div></div>
+                <div className="stat-card"><div className="num">{game.faced}</div><div className="label">枠内被シュート</div></div>
+                <div className="stat-card"><div className="num">{game.saveRate}%</div><div className="label">セーブ率</div></div>
+              </div>
+              <div className="stat-row mt-16"><span className="label">失点</span><span className="value">{game.conceded} 点</span></div>
+            </div>
+          )}
 
           {courseArr.length > 0 && (
             <>
@@ -3360,6 +3452,16 @@
                     {linked ? `✓ mental連携済 (${linkedUserData ? linkedUserData.name : '?'})` : '◯ mental未連携'}
                   </div>
                 </div>
+                {linked && (
+                  <div className="right">
+                    <button className="btn-ghost" style={{padding:'6px 10px', fontSize:12}} onClick={async (ev) => {
+                      ev.stopPropagation();
+                      if (!confirm(`${e.displayName} の端末連携を解除しますか？\n\n選手のクラウド記録は消えません。解除後、選手は次回ログイン時に名簿から自分を選び直せます（機種変更・スマホ紛失時の復旧用）。`)) return;
+                      try { await storage.unlinkRoster(e.id); showToast('連携を解除しました'); }
+                      catch (err) { console.warn('[unlink]', err); showToast('解除できませんでした'); }
+                    }}>連携解除</button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -3401,7 +3503,7 @@
       const yearOptions = [];
       for (let y = thisYear + 1; y >= thisYear - 4; y--) yearOptions.push(y);
       return (
-        <div className="modal-overlay" onClick={onCancel}>
+        <div className="modal-overlay" onClick={() => { if (confirm('入力中の内容は保存されません。閉じますか？')) onCancel(); }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">{initial.id ? '選手編集' : '選手追加'}</div>
@@ -3632,7 +3734,7 @@
         if (!parsed) return;
         setBusy(true);
         try {
-          const gameDate = (parsed.rows[0] && parsed.rows[0].date) || new Date().toISOString().slice(0, 10);
+          const gameDate = (parsed.rows[0] && parsed.rows[0].date) || todayStr();
           const opponent = (parsed.rows[0] && parsed.rows[0].opponent) || 'unknown';
           const gameId = gameDate + '_' + opponent.replace(/[^a-zA-Z0-9一-龯ぁ-んァ-ヶ]/g, '');
           let saved = 0;
