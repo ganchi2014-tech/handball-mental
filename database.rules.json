@@ -29,7 +29,10 @@
 
     "team": {
       ".read": "auth != null",
-      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()",
+      "tryNow": {
+        ".write": "auth != null && (root.child('coaches').child(auth.uid).exists() || root.child('team').child('boardKeeperUid').val() === auth.uid)"
+      }
     },
 
     "roster": {

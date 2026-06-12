@@ -591,6 +591,7 @@
         sessionLogs: [],
         selfChecks: [],
         sessionWorks: {},
+        nightLogs: [],
         localUpdatedAt: 0
       };
     }
@@ -710,6 +711,11 @@
       unlinkRoster: async (rosterId) => {
         if (!fbDB || !rosterId) return;
         return fbDB.ref('rosterToUid/' + rosterId).remove();
+      },
+      // ----- ボード係（選手）が「今のTry」だけ更新できる（権限移譲の第一歩） -----
+      setTeamTryNow: async (text) => {
+        if (!fbDB) return;
+        return fbDB.ref('team/tryNow').set(text);
       },
       // ----- 相談の対応記録（顧問のみ書込・本物のSOSが埋もれないように） -----
       ackConsult: async (targetUid, reviewId) => {
@@ -1100,9 +1106,10 @@
             team={team}
           />
           <div className="content">
-            {view === 'home' && <Home state={state} onNav={setView} team={team} update={update} myCoachNotes={myCoachNotes} myGameStats={myGameStats} onWriteReflection={openReflection} />}
-            {view === 'breath' && <BreathingGuide />}
+            {view === 'home' && <Home state={state} onNav={setView} team={team} update={update} myCoachNotes={myCoachNotes} myGameStats={myGameStats} onWriteReflection={openReflection} showToast={showToast} />}
+            {view === 'breath' && <BreathingGuide state={state} update={update} showToast={showToast} />}
             {view === 'pregame' && <PreGame state={state} team={team} update={update} showToast={showToast} onNav={setView} />}
+            {view === 'ayumi' && <Ayumi state={state} myGameStats={myGameStats} />}
             {view === 'coachnotes' && <CoachNotesView notes={myCoachNotes} />}
             {view === 'reflection' && (
               <Reflections
@@ -1114,7 +1121,7 @@
               />
             )}
             {view === 'izof' && (
-              <Izof state={state} update={update} showToast={showToast} />
+              <Izof state={state} update={update} showToast={showToast} myGameStats={myGameStats} />
             )}
             {view === 'selfcheck' && (
               <SelfCheck state={state} update={update} showToast={showToast} onNav={setView} />
@@ -1512,6 +1519,98 @@
       );
     }
 
+    // ====== あゆみ（1年の物語・読み取り専用。評価でなく事実の蓄積） ======
+    function Ayumi({ state, myGameStats }) {
+      const ROUND_LABEL = { baseline: '1回目(6月)', midterm: '中間(1月)', final: '最終(6月)' };
+      const scs = state.selfChecks || [];
+      const first = scs.length > 1 ? scs[scs.length - 1] : null;
+      const latest = scs[0] || null;
+      const decls = state.declarations || [];
+      const totalChecks = decls.reduce((s, d) => s + ((d.checks || []).length), 0);
+      const completedDecls = decls.filter(d => d.completed);
+      const { games, total } = aggregateGameStats(myGameStats || {});
+      const bests = (state.reflections || []).filter(r => r.bestPlay).slice().sort((a, b) => (a.gameDate || '').localeCompare(b.gameDate || ''));
+      const words = (state.reflections || []).filter(r => r.coachWord).slice().sort((a, b) => (a.gameDate || '').localeCompare(b.gameDate || ''));
+      const empty = !latest && totalChecks === 0 && games.length === 0 && bests.length === 0;
+      return (
+        <>
+          <div className="section-h">📖 あゆみ — 自分で積んだ記録</div>
+          {empty && (
+            <div className="empty">
+              <div className="empty-icon">📖</div>
+              <div>まだ記録が少ない</div>
+              <div className="text-small">宣言・振り返り・セルフチェックがたまると、ここに1年の物語が編まれていく</div>
+            </div>
+          )}
+
+          {latest && (
+            <div className="card">
+              <div className="card-title">🧭 心の5つの力</div>
+              <div className="card-subtitle">{ROUND_LABEL[latest.round] || latest.round}（{latest.date}）</div>
+              <SelfCheckBars scores={latest.axisScores} />
+              {first && first !== latest && (
+                <div className="text-small text-muted" style={{marginTop:10}}>
+                  {ROUND_LABEL[first.round] || first.round}からの変化:
+                  {SC_AXES.map(ax => {
+                    const dd = (latest.axisScores[ax.key] || 0) - (first.axisScores[ax.key] || 0);
+                    return ` ${ax.name.slice(0,2)}${dd > 0 ? '+' + dd : dd === 0 ? '±0' : dd}`;
+                  }).join(' /')}
+                </div>
+              )}
+            </div>
+          )}
+
+          {(totalChecks > 0 || completedDecls.length > 0) && (
+            <div className="card">
+              <div className="card-title">✅ 行動宣言のあゆみ</div>
+              <div className="summary-stats" style={{marginTop:12}}>
+                <div className="stat-card"><div className="num">{totalChecks}</div><div className="label">積んだ日数</div></div>
+                <div className="stat-card"><div className="num">{completedDecls.length}</div><div className="label">やり切った宣言</div></div>
+              </div>
+              {completedDecls.slice(0, 6).map(d => (
+                <div key={d.id} className="stat-row"><span className="label">{d.startDate}〜</span><span className="value" style={{maxWidth:'70%', textAlign:'right'}}>{d.declaration}（{(d.checks || []).length}日）</span></div>
+              ))}
+            </div>
+          )}
+
+          {games.length > 0 && (
+            <div className="card">
+              <div className="card-title">🤾 試合のあゆみ</div>
+              <div className="summary-stats" style={{marginTop:12}}>
+                <div className="stat-card"><div className="num">{games.length}</div><div className="label">試合</div></div>
+                <div className="stat-card"><div className="num">{total.goals}</div><div className="label">ゴール</div></div>
+                <div className="stat-card"><div className="num">{total.faced > 0 ? total.saves : total.goalRate + '%'}</div><div className="label">{total.faced > 0 ? 'セーブ' : '決定率'}</div></div>
+              </div>
+            </div>
+          )}
+
+          {bests.length > 0 && (
+            <div className="card">
+              <div className="card-title">⭐ ベストプレー年表</div>
+              {bests.map(r => (
+                <div key={r.id} className="stat-row"><span className="label">{(r.gameDate || '').slice(5)}</span><span className="value" style={{maxWidth:'75%', textAlign:'right'}}>{r.bestPlay}</span></div>
+              ))}
+            </div>
+          )}
+
+          {words.length > 0 && (
+            <div className="card">
+              <div className="card-title">💬 心に残った言葉</div>
+              {words.map(r => (
+                <div key={r.id} className="stat-row"><span className="label">{(r.gameDate || '').slice(5)}</span><span className="value" style={{maxWidth:'75%', textAlign:'right'}}>「{r.coachWord}」</span></div>
+              ))}
+            </div>
+          )}
+
+          {!empty && (
+            <div className="card" style={{borderLeft:'3px solid var(--primary)'}}>
+              <div className="card-subtitle" style={{fontWeight:700}}>これ全部、自分で積んだ記録。続けてきたのは自分だ。</div>
+            </div>
+          )}
+        </>
+      );
+    }
+
     // ====== 試合前モード（アップ前の3分で見るものを1画面に） ======
     function PreGame({ state, team, update, showToast, onNav }) {
       const [recording, setRecording] = useState(false);
@@ -1570,7 +1669,7 @@
     }
 
     // ====== Home ======
-    function Home({ state, onNav, team, update, myCoachNotes, myGameStats, onWriteReflection }) {
+    function Home({ state, onNav, team, update, myCoachNotes, myGameStats, onWriteReflection, showToast }) {
       const today = new Date();
       const hour = today.getHours();
       const greeting = hour < 11 ? 'おはよう' : hour < 18 ? 'こんにちは' : 'お疲れ様';
@@ -1704,6 +1803,11 @@
               <div className="tile-title">試合前モード</div>
               <div className="tile-sub">アップ前の3分でこれ</div>
             </button>
+            <button className="quick-tile" onClick={() => onNav('ayumi')}>
+              <span className="tile-icon">📖</span>
+              <div className="tile-title">あゆみ</div>
+              <div className="tile-sub">自分で積んだ記録</div>
+            </button>
           </div>
 
           {team && (team.theme || team.aikotoba || team.breathingRule || team.norms || team.tryNow || team.voiceNotes) && (
@@ -1720,6 +1824,15 @@
                 {team.breathingRule && <div className="stat-row"><span className="label">2-3-15ルール</span><span className="value">{team.breathingRule}</span></div>}
                 {team.norms && <div className="stat-row"><span className="label">コートの約束</span><span className="value" style={{whiteSpace:'pre-line', textAlign:'right'}}>{team.norms}</span></div>}
                 {team.tryNow && <div className="stat-row"><span className="label">今のTry</span><span className="value">{team.tryNow}</span></div>}
+                {/* ボード係（権限移譲）: 自分が係なら「今のTry」をここから更新できる */}
+                {team.boardKeeperUid && state.user && state.user.id === team.boardKeeperUid && (
+                  <button className="btn-ghost" style={{width:'100%', marginTop:10}} onClick={async () => {
+                    const next = prompt('今のTry（チームで決めたこと）を更新:', team.tryNow || '');
+                    if (next === null) return;
+                    try { await storage.setTeamTryNow(next.trim()); showToast && showToast('チームボードを更新した（ボード係の仕事、おつかれ）'); }
+                    catch (e) { console.warn('[tryNow]', e); showToast && showToast('更新できませんでした（ルール適用が必要）'); }
+                  }}>✏ 今のTryを更新する（あなたがボード係）</button>
+                )}
                 {team.voiceNotes && (() => {
                   const vn = Object.values(team.voiceNotes).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 3);
                   return vn.length ? (
@@ -1838,6 +1951,7 @@
         mentalFinding: initial.mentalFinding || '',
         nextTask: initial.nextTask || '',
         coachWord: initial.coachWord || '',
+        usedTechniques: initial.usedTechniques || [], // M1-M5の実戦投入ログ
         izofSource: initial.izofSource || null, // 'auto'(IZOFタブから転記) | 'manual'(手入力) | null(デフォルト値のまま=型ヒントに使わない)
         preGameIzof: initial.preGameIzof || { tension: 3, focus: 3, confidence: 3, condition: 3 }
       });
@@ -1906,6 +2020,20 @@
             </div>
 
             <div className="form-group">
+              <label>今日使った技（あれば・複数OK）</label>
+              <div className="chip-group" style={{flexWrap:'wrap'}}>
+                {['🌬呼吸','🎬イメージ','🎯目標','🗣セルフトーク','📣声かけ'].map(t => (
+                  <div key={t} className={'chip ' + ((d.usedTechniques || []).includes(t) ? 'selected' : '')}
+                    onClick={() => {
+                      const cur = d.usedTechniques || [];
+                      setD({ ...d, usedTechniques: cur.includes(t) ? cur.filter(x => x !== t) : [...cur, t] });
+                    }}>{t}</div>
+                ))}
+              </div>
+              <div className="text-small text-muted" style={{marginTop:4}}>たまると🎯IZOFタブの実証表で「自分に効く技」がデータで見える</div>
+            </div>
+
+            <div className="form-group">
               <label>試合前のIZOF（1=最低 〜 5=最高）{autoIzof && <span style={{color:'var(--accent)', fontWeight:700}}>　✓ 試合前の記録から自動入力</span>}</label>
               <div className="text-small text-muted" style={{marginBottom:8}}>
                 試合前に🎯IZOFタブで記録していれば自動で入る。無ければ試合前を思い出して（だいたいでOK）。
@@ -1939,7 +2067,7 @@
     }
 
     // ====== IZOF ======
-    function Izof({ state, update, showToast }) {
+    function Izof({ state, update, showToast, myGameStats }) {
       const [adding, setAdding] = useState(false);
       const [izofType, setIzofType] = useState(normIzofType(state.user.izofType) || '');
 
@@ -2001,6 +2129,32 @@
                   （基準: ベスト時の緊張 1-2＝低覚醒型／3＝中間型／4-5＝高覚醒型）<br/>
                   これは提案。<b>決めるのは自分</b>——上の型チップで選んで保存（自動では変えません）。
                 </div>
+              </div>
+            );
+          })()}
+
+          {/* マイゾーン実証表: 緊張×調子×決定率を1行で並べ、型を自分のデータで確かめる */}
+          {(() => {
+            const rows = (state.reflections || []).filter(r => r.izofSource && r.selfScore != null && r.preGameIzof).slice(0, 12);
+            if (rows.length === 0) return null;
+            const { games } = aggregateGameStats(myGameStats || {});
+            const byDate = {};
+            games.forEach(g => { if (!byDate[g.date]) byDate[g.date] = g; });
+            return (
+              <div className="card">
+                <div className="card-title">📊 マイゾーン実証表</div>
+                <div className="card-subtitle">試合前の緊張 × 調子 × 数字。「自分の型」が本当か、自分のデータで確かめる。</div>
+                {rows.map(r => {
+                  const g = byDate[r.gameDate];
+                  const num = g ? (g.faced > 0 ? `セーブ率${g.saveRate}%` : `決定率${g.goalRate}%`) : null;
+                  return (
+                    <div key={r.id} className="stat-row">
+                      <span className="label">{(r.gameDate || '').slice(5)} {r.opponent ? `vs ${r.opponent.slice(0,6)}` : ''}</span>
+                      <span className="value">緊張{r.preGameIzof.tension} ・ 調子{r.selfScore}/10{num ? ` ・ ${num}` : ''}{(r.usedTechniques && r.usedTechniques.length) ? ` ・ ${r.usedTechniques.join('')}` : ''}</span>
+                    </div>
+                  );
+                })}
+                <div className="text-small text-muted" style={{marginTop:8}}>調子の良い行の「緊張」が自分のゾーン。技が並ぶ行は、その技が効いた証拠かもしれない。</div>
               </div>
             );
           })()}
@@ -2376,7 +2530,7 @@
       { id: '446', name: '4-4-6（やさしい）', sub: '4-7-8の「止める7秒」がきつい人はこちら', phases: [['吸う（鼻から）', 4], ['止める', 4], ['吐く（口から）', 6]] },
       { id: 'box', name: 'ボックス 4-4-4-4', sub: '試合中・ベンチで「整える」（目で四角をなぞる）', phases: [['吸う', 4], ['止める', 4], ['吐く', 4], ['止める', 4]] },
     ];
-    function BreathingGuide() {
+    function BreathingGuide({ state, update, showToast }) {
       const [tech, setTech] = useState(BREATH_TECHS[0]);
       const [st, setSt] = useState(null); // null=停止中 / {pi, left, cycles}
       useEffect(() => {
@@ -2424,22 +2578,73 @@
             )}
           </div>
           <div className="text-small text-muted">高覚醒型は下げすぎ注意——使うのは「明らかに過剰」の時だけ・1〜2サイクルで整えるだけ。</div>
+
+          {/* 🌙 おやすみルーティン（S6イメージ×呼吸×鮮明度の毎晩ループ） */}
+          {state && update && (() => {
+            const work6 = (state.sessionWorks && state.sessionWorks[6]) || null;
+            const logs = state.nightLogs || [];
+            const today = todayStr();
+            const todayLog = logs.find(l => l.date === today);
+            const saveVividness = (v) => {
+              const rest = logs.filter(l => l.date !== today);
+              update({ nightLogs: [{ date: today, vividness: v }, ...rest].slice(0, 90) });
+              showToast && showToast('おやすみ。今日の鮮明度 ' + v + ' を記録');
+            };
+            const recent = [...logs].sort((a, b) => (a.date || '').localeCompare(b.date || '')).slice(-14);
+            return (
+              <div className="card mt-16">
+                <div className="card-title">🌙 おやすみルーティン</div>
+                {work6 && (work6.bestPlay || work6.senses || work6.routine) ? (
+                  <div className="card-subtitle" style={{lineHeight:1.7}}>
+                    自分のイメージ台本（S6ワークから）:<br/>
+                    {work6.bestPlay && <>🎬 {work6.bestPlay}<br/></>}
+                    {work6.senses && <>👁 {work6.senses}<br/></>}
+                    {work6.routine && <>🛏 {work6.routine}</>}
+                  </div>
+                ) : (
+                  <div className="card-subtitle">流れ: 呼吸1サイクル → ベストプレーを五感でイメージ → 鮮明度をタップ。【📒セッションワーク→🎬イメージ】を書くと自分の台本がここに出る。</div>
+                )}
+                <div className="form-group" style={{marginTop:10, marginBottom:0}}>
+                  <label>今日の鮮明度（1=ほぼ見えない 〜 5=ほぼ本物）{todayLog ? ' ✓記録済み' : ''}</label>
+                  <div className="chip-group">
+                    {[1,2,3,4,5].map(n => (
+                      <div key={n} className={'chip ' + (todayLog && todayLog.vividness === n ? 'selected' : '')} onClick={() => saveVividness(n)}>{n}</div>
+                    ))}
+                  </div>
+                </div>
+                {recent.length >= 2 && (
+                  <>
+                    <div style={{display:'flex', gap:3, alignItems:'flex-end', height:42, marginTop:10}}>
+                      {recent.map(l => (
+                        <div key={l.date} title={l.date + ' : ' + l.vividness} style={{flex:1, height:(l.vividness/5*100)+'%', background:'var(--primary)', opacity:0.75, borderRadius:3}} />
+                      ))}
+                    </div>
+                    <div className="text-small text-muted" style={{marginTop:4}}>鮮明度の推移（低くて正常・反復で上がる。比べるのは昨日の自分とだけ）</div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
         </>
       );
     }
 
     // ====== チームボード（顧問が編集・全員のホームに表示） ======
-    function TeamBoardEdit({ team, saveTeam, showToast }) {
+    function TeamBoardEdit({ team, saveTeam, showToast, players }) {
       const [open, setOpen] = useState(false);
       const [v, setV] = useState({});
       const openEdit = () => {
-        setV({ aikotoba: team.aikotoba || '', breathingRule: team.breathingRule || '', norms: team.norms || '', tryNow: team.tryNow || '', theme: team.theme || '' });
+        setV({ aikotoba: team.aikotoba || '', breathingRule: team.breathingRule || '', norms: team.norms || '', tryNow: team.tryNow || '', theme: team.theme || '', boardKeeperUid: team.boardKeeperUid || '' });
         setOpen(true);
       };
       const save = async () => {
         try { await saveTeam(v); showToast('チームボードを保存しました'); setOpen(false); }
         catch (e) { console.warn('[team save]', e); showToast('保存できません（Firebaseルールに /team が必要）'); }
       };
+      const keeperName = (() => {
+        const p = (players || []).find(pp => pp.uid === team.boardKeeperUid);
+        return p ? p.profile.name : null;
+      })();
       return (
         <div className="card">
           <div className="card-title">🏳 チームボード（全選手のホームに表示）</div>
@@ -2450,7 +2655,8 @@
                 合言葉: {team.aikotoba || '未設定'}（ヘッダーに常時表示）<br/>
                 2-3-15ルール: {team.breathingRule || '未設定'}<br/>
                 コートの約束: {team.norms || '未設定'}<br/>
-                今のTry: {team.tryNow || '未設定'}
+                今のTry: {team.tryNow || '未設定'}<br/>
+                ボード係: {keeperName || '未設定'}（「今のTry」を選手が更新できる）
               </div>
               <button className="btn-ghost" style={{width:'100%'}} onClick={openEdit}>編集する</button>
             </>
@@ -2461,6 +2667,16 @@
               <div className="form-group"><label>2-3-15ルール（S3で選手が決定。例: 試合20分前に3サイクル・高覚醒型は1〜2でOK）</label><input value={v.breathingRule} onChange={e => setV({...v, breathingRule: e.target.value})} /></div>
               <div className="form-group"><label>コートの約束（S14で共同作成・改行区切り）</label><textarea rows={3} value={v.norms} onChange={e => setV({...v, norms: e.target.value})} /></div>
               <div className="form-group"><label>今のTry（チームレトロで決定）</label><input value={v.tryNow} onChange={e => setV({...v, tryNow: e.target.value})} /></div>
+              <div className="form-group">
+                <label>ボード係（権限移譲: この選手は自分のホームから「今のTry」を更新できる）</label>
+                <select value={v.boardKeeperUid} onChange={e => setV({...v, boardKeeperUid: e.target.value})}
+                  style={{width:'100%', background:'rgba(0,0,0,0.3)', color:'var(--text-1)', border:'1px solid var(--border)', borderRadius:8, padding:'10px 8px'}}>
+                  <option value="">（なし）</option>
+                  {(players || []).map(p => (
+                    <option key={p.uid} value={p.uid}>{p.profile.name}</option>
+                  ))}
+                </select>
+              </div>
               <button className="btn" onClick={save}>保存</button>
               <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={() => setOpen(false)}>キャンセル</button>
             </>
@@ -3125,7 +3341,7 @@
             </div>
           )}
 
-          <TeamBoardEdit team={team || {}} saveTeam={saveTeam} showToast={showToast} />
+          <TeamBoardEdit team={team || {}} saveTeam={saveTeam} showToast={showToast} players={players} />
           <CoachVoiceLog team={team || {}} players={players} showToast={showToast} />
 
           {allConsults.length > 0 && (() => {
@@ -3565,6 +3781,63 @@
               <div className="stat-row mt-16"><span className="label">失点</span><span className="value">{game.conceded} 点</span></div>
             </div>
           )}
+
+          {/* シュートマップ（analyzer座標 x,y=% をそのまま描画） */}
+          {(() => {
+            const pts = game.rows.filter(r => r.mode === 'attack' && r.x !== '' && r.x != null && r.y !== '' && r.y != null);
+            if (pts.length === 0) return null;
+            const color = (r) => r.result === 'goal' ? 'var(--success)' : (r.result === 'save' ? '#f5a900' : (r.result === 'turnover' ? 'var(--text-3)' : 'rgba(255,255,255,0.45)'));
+            return (
+              <div className="card mt-16">
+                <div className="card-title">🗺 シュートマップ</div>
+                <div className="card-subtitle">●ゴール ○セーブ/ミス ✕TO（上がゴール側）</div>
+                <svg viewBox="0 0 100 75" style={{width:'100%', background:'rgba(255,255,255,0.04)', borderRadius:8, marginTop:8}}>
+                  <rect x="40" y="0" width="20" height="2.2" fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="0.7" />
+                  <path d="M 28 0 A 24 24 0 0 0 72 0" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="0.5" />
+                  <path d="M 16 0 A 38 38 0 0 0 84 0" fill="none" stroke="rgba(255,255,255,0.14)" strokeWidth="0.5" strokeDasharray="2 2" />
+                  {pts.map((r, i) => {
+                    const x = Number(r.x), y = Number(r.y) * 0.75;
+                    if (r.result === 'turnover') {
+                      return (
+                        <g key={i} stroke={color(r)} strokeWidth="0.8">
+                          <line x1={x-1.5} y1={y-1.5} x2={x+1.5} y2={y+1.5} />
+                          <line x1={x-1.5} y1={y+1.5} x2={x+1.5} y2={y-1.5} />
+                        </g>
+                      );
+                    }
+                    return <circle key={i} cx={x} cy={y} r="1.9"
+                      fill={r.result === 'goal' ? color(r) : 'none'}
+                      stroke={color(r)} strokeWidth="0.8" />;
+                  })}
+                </svg>
+              </div>
+            );
+          })()}
+
+          {/* 攻撃種別・前後半（サイドの命=速攻が見える） */}
+          {(() => {
+            const shots2 = game.rows.filter(r => r.mode === 'attack' && r.result !== 'turnover');
+            if (shots2.length === 0) return null;
+            const agg = (list) => {
+              const s = list.length, g = list.filter(r => r.result === 'goal').length;
+              return { s, g, rate: s > 0 ? Math.round(g / s * 100) : 0 };
+            };
+            const TYPES = [['set','セット'],['fast','速攻'],['7m','7m']];
+            const typeRows = TYPES.map(([k, label]) => ({ label, ...agg(shots2.filter(r => (r.attack_type || 'set') === k)) })).filter(t => t.s > 0);
+            const p1 = agg(shots2.filter(r => String(r.period) === '1'));
+            const p2 = agg(shots2.filter(r => String(r.period) === '2'));
+            return (
+              <div className="card mt-16">
+                <div className="card-title">種別・前後半</div>
+                {typeRows.map(t => (
+                  <div key={t.label} className="stat-row"><span className="label">{t.label}</span><span className="value">{t.g}/{t.s}（{t.rate}%）</span></div>
+                ))}
+                {(p1.s > 0 || p2.s > 0) && (
+                  <div className="stat-row"><span className="label">前半 / 後半</span><span className="value">{p1.g}/{p1.s}（{p1.rate}%） ／ {p2.g}/{p2.s}（{p2.rate}%）</span></div>
+                )}
+              </div>
+            );
+          })()}
 
           {courseArr.length > 0 && (
             <>
