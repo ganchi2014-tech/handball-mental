@@ -15,6 +15,9 @@
         },
         "coachNotes": {
           ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+        },
+        "consultAck": {
+          ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
         }
       }
     },

@@ -711,6 +711,15 @@
         if (!fbDB || !rosterId) return;
         return fbDB.ref('rosterToUid/' + rosterId).remove();
       },
+      // ----- 相談の対応記録（顧問のみ書込・本物のSOSが埋もれないように） -----
+      ackConsult: async (targetUid, reviewId) => {
+        if (!fbDB || !targetUid || !reviewId) return;
+        return fbDB.ref('users/' + targetUid + '/consultAck/' + reviewId).set(firebase.database.ServerValue.TIMESTAMP);
+      },
+      unackConsult: async (targetUid, reviewId) => {
+        if (!fbDB || !targetUid || !reviewId) return;
+        return fbDB.ref('users/' + targetUid + '/consultAck/' + reviewId).remove();
+      },
       subscribeRosterToUid: (callback) => {
         if (!fbDB) return () => {};
         const ref = fbDB.ref('rosterToUid');
@@ -834,6 +843,8 @@
     function App() {
       const [state, setState] = useState(() => storage.loadCache());
       const [view, setView] = useState('home');
+      const [reflectionPrefill, setReflectionPrefill] = useState(null);
+      const openReflection = (pre) => { setReflectionPrefill(pre || null); setView('reflection'); };
       const [toast, setToast] = useState(null);
       const [authUid, setAuthUid] = useState(null);
       const [authReady, setAuthReady] = useState(false);
@@ -1089,14 +1100,17 @@
             team={team}
           />
           <div className="content">
-            {view === 'home' && <Home state={state} onNav={setView} team={team} update={update} myCoachNotes={myCoachNotes} />}
+            {view === 'home' && <Home state={state} onNav={setView} team={team} update={update} myCoachNotes={myCoachNotes} myGameStats={myGameStats} onWriteReflection={openReflection} />}
             {view === 'breath' && <BreathingGuide />}
+            {view === 'pregame' && <PreGame state={state} team={team} update={update} showToast={showToast} onNav={setView} />}
             {view === 'coachnotes' && <CoachNotesView notes={myCoachNotes} />}
             {view === 'reflection' && (
               <Reflections
                 state={state}
                 update={update}
                 showToast={showToast}
+                prefill={reflectionPrefill}
+                onConsumePrefill={() => setReflectionPrefill(null)}
               />
             )}
             {view === 'izof' && (
@@ -1115,7 +1129,7 @@
               <Monthly state={state} update={update} showToast={showToast} />
             )}
             {view === 'stats' && !state.user.isCoach && (
-              <MyStats state={state} myGameStats={myGameStats} onNav={setView} />
+              <MyStats state={state} myGameStats={myGameStats} onNav={setView} onWriteReflection={openReflection} />
             )}
             {view === 'coach' && state.user.isCoach && (
               isApprovedCoach ? (
@@ -1498,8 +1512,65 @@
       );
     }
 
+    // ====== 試合前モード（アップ前の3分で見るものを1画面に） ======
+    function PreGame({ state, team, update, showToast, onNav }) {
+      const [recording, setRecording] = useState(false);
+      const izofType = normIzofType(state.user.izofType) || '';
+      const lastTask = (state.reflections || []).find(r => r.nextTask);
+      const todayRec = (state.izofRecords || []).find(r => r.date === todayStr());
+      const typeTips = {
+        '低覚醒型': 'リラックスでベスト。深呼吸・静かに集中。上がりすぎたら2-3-15。',
+        '中間型': 'ほどよい緊張でベスト。軽い声出し・ストレッチ。上がりすぎは“ちょい戻し”。',
+        '高覚醒型': '興奮状態でベスト。アップビート・ハイタッチで上げる。呼吸は「明らかに過剰」の時だけ1〜2サイクル。'
+      };
+      const saveRec = (record) => {
+        update({ izofRecords: [{ ...record, id: uid(), createdAt: Date.now(), context: record.context || '試合前' }, ...state.izofRecords] });
+        setRecording(false);
+        showToast('記録した——試合後の振り返りに自動でつながる');
+      };
+      return (
+        <>
+          <div className="section-h">🏟 試合前モード</div>
+
+          {lastTask && (
+            <div className="card" style={{borderLeft:'3px solid var(--primary)'}}>
+              <div className="text-small" style={{color:'var(--text-2)'}}>🎯 前回の課題（{lastTask.gameDate} vs {lastTask.opponent}）</div>
+              <div style={{fontWeight:800, fontSize:16, marginTop:4}}>{lastTask.nextTask}</div>
+            </div>
+          )}
+
+          <div className="card">
+            <div className="card-title">自分の型：{izofType || '未設定'}</div>
+            <div className="card-subtitle">{izofType ? typeTips[izofType] : 'IZOFタブで型を設定すると、ここに自分用の整え方が出る'}</div>
+          </div>
+
+          {team && (team.theme || team.aikotoba || team.breathingRule) && (
+            <div className="card">
+              <div className="card-title">チーム</div>
+              {team.theme && <div className="stat-row"><span className="label">今日のテーマ</span><span className="value">{team.theme}</span></div>}
+              {team.aikotoba && <div className="stat-row"><span className="label">合言葉</span><span className="value">{team.aikotoba}</span></div>}
+              {team.breathingRule && <div className="stat-row"><span className="label">2-3-15ルール</span><span className="value">{team.breathingRule}</span></div>}
+            </div>
+          )}
+
+          {todayRec ? (
+            <div className="card" style={{borderLeft:'3px solid var(--success)'}}>
+              <div className="card-title">✓ 今日の状態は記録済み</div>
+              <div className="card-subtitle">緊張:{todayRec.tension} 集中:{todayRec.focus} 自信:{todayRec.confidence} 体調:{todayRec.condition}（試合後の振り返りに自動転記される）</div>
+            </div>
+          ) : (
+            <button className="btn mb-16" onClick={() => setRecording(true)}>🎯 今の状態を記録する</button>
+          )}
+
+          <button className="btn-ghost" style={{width:'100%'}} onClick={() => onNav('breath')}>🌬 呼吸ガイドを開く（整えたい人）</button>
+
+          {recording && <IzofEditor onSave={saveRec} onCancel={() => setRecording(false)} />}
+        </>
+      );
+    }
+
     // ====== Home ======
-    function Home({ state, onNav, team, update, myCoachNotes }) {
+    function Home({ state, onNav, team, update, myCoachNotes, myGameStats, onWriteReflection }) {
       const today = new Date();
       const hour = today.getHours();
       const greeting = hour < 11 ? 'おはよう' : hour < 18 ? 'こんにちは' : 'お疲れ様';
@@ -1530,6 +1601,35 @@
                     update({ declarations: state.declarations.map(x => x.id === activeDecl.id ? { ...x, checks: [...(x.checks || []), ds] } : x) });
                   }}>✓ 今日やった！（いま {declCheckedDays} / 28日）</button>
                 )}
+              </div>
+            );
+          })()}
+
+          {/* 試合データ着弾 → 振り返り導線（数字と気持ちをつなぐ） */}
+          {myGameStats && onWriteReflection && (() => {
+            const { games } = aggregateGameStats(myGameStats);
+            const latest = games[0];
+            if (!latest || !latest.date) return null;
+            const hasRef = (state.reflections || []).some(r => r.gameDate === latest.date);
+            if (hasRef) return null;
+            return (
+              <div className="card" style={{borderLeft:'3px solid var(--accent)', cursor:'pointer'}}
+                onClick={() => onWriteReflection({ gameDate: latest.date, opponent: latest.opponent })}>
+                <div className="card-title">📊 試合データが届いた</div>
+                <div className="card-subtitle">{latest.date} vs {latest.opponent}{latest.faced > 0 ? `　🧤${latest.saves}セーブ` : `　${latest.goals}G/${latest.shots}S`}</div>
+                <div className="text-small" style={{color:'var(--primary)', marginTop:6}}>→ 振り返りを書くと、数字と気持ちがつながる（タップ）</div>
+              </div>
+            );
+          })()}
+
+          {/* 前回の課題（自分で書いた nextTask を思い出させる） */}
+          {(() => {
+            const last = (state.reflections || []).find(r => r.nextTask);
+            if (!last) return null;
+            return (
+              <div className="card">
+                <div className="text-small" style={{color:'var(--text-2)'}}>🎯 前回の課題（{last.gameDate} vs {last.opponent}）</div>
+                <div style={{fontWeight:700, marginTop:4}}>{last.nextTask}</div>
               </div>
             );
           })()}
@@ -1599,6 +1699,11 @@
               <div className="tile-title">呼吸ガイド</div>
               <div className="tile-sub">寝る前1サイクルからOK</div>
             </button>
+            <button className="quick-tile" onClick={() => onNav('pregame')}>
+              <span className="tile-icon">🏟</span>
+              <div className="tile-title">試合前モード</div>
+              <div className="tile-sub">アップ前の3分でこれ</div>
+            </button>
           </div>
 
           {team && (team.theme || team.aikotoba || team.breathingRule || team.norms || team.tryNow || team.voiceNotes) && (
@@ -1650,9 +1755,17 @@
     }
 
     // ====== Reflections ======
-    function Reflections({ state, update, showToast }) {
+    function Reflections({ state, update, showToast, prefill, onConsumePrefill }) {
       const [editing, setEditing] = useState(null);
       const reflections = state.reflections;
+
+      // Home/マイ統計から「この試合の振り返りを書く」で遷移した場合、日付・相手を埋めて開く
+      useEffect(() => {
+        if (prefill) {
+          setEditing(prefill);
+          onConsumePrefill && onConsumePrefill();
+        }
+      }, [prefill]);
 
       const save = (data) => {
         let list;
@@ -2818,6 +2931,7 @@
             selfChecks: s.selfChecks || [],
             sessionWorks: s.sessionWorks || {},
             coachNotes: (data && data.coachNotes) || {},
+            consultAck: (data && data.consultAck) || {},
             monthlyReviews: s.monthlyReviews || [],
             sessionLogs: s.sessionLogs || [],
             gameStats: (data && data.gameStats) || {},
@@ -2835,18 +2949,89 @@
         players.forEach(p => {
           (p.monthlyReviews || []).forEach(r => {
             if (r.consultRequest) {
-              out.push({ ...r, _playerName: p.profile.name, _playerUid: p.uid });
+              out.push({ ...r, _playerName: p.profile.name, _playerUid: p.uid, _acked: !!(p.consultAck && p.consultAck[r.id]) });
             }
           });
         });
-        // 最新月から
-        out.sort((a, b) => (b.yearMonth || '').localeCompare(a.yearMonth || ''));
+        // 未対応を上に、その中で最新月から
+        out.sort((a, b) => (a._acked !== b._acked) ? (a._acked ? 1 : -1) : (b.yearMonth || '').localeCompare(a.yearMonth || ''));
         return out;
       }, [players]);
 
       const totalReflections = players.reduce((s, p) => s + p.reflections.length, 0);
       const totalIzof        = players.reduce((s, p) => s + p.izofRecords.length, 0);
       const totalMonthly     = players.reduce((s, p) => s + p.monthlyReviews.length, 0);
+
+      // ── 自動トリアージ（月曜朝5分で「今週気にかける選手」を出す） ──
+      const triage = useMemo(() => {
+        const today = todayStr();
+        const daysAgo = (ds) => {
+          if (!ds) return 9999;
+          return Math.round((new Date(today + 'T00:00:00') - new Date(ds + 'T00:00:00')) / 86400000);
+        };
+        const matchDates = Object.values(matches || {}).map(m => m && m.date).filter(Boolean).sort();
+        const lastMatchDate = matchDates[matchDates.length - 1] || null;
+
+        const rows = players.map(p => {
+          const reasons = [];
+          let score = 0;
+          // 相談希望（未対応のものは最優先）
+          const consult = (p.monthlyReviews || []).find(r => r.consultRequest && !(p.consultAck && p.consultAck[r.id]));
+          if (consult) { reasons.push('💬 相談希望'); score += 10; }
+          // 宣言が止まっている
+          const ad = (p.declarations || []).find(d => !d.completed);
+          if (ad) {
+            const checks = ad.checks || [];
+            const last = checks.length ? [...checks].sort()[checks.length - 1] : null;
+            const gap = last ? daysAgo(last) : daysAgo(ad.startDate);
+            if (gap >= 3 && gap < 999) { reasons.push(`✅ 宣言${gap}日停止`); score += Math.min(gap, 7); }
+          }
+          // 直近試合（7日以内）の振り返り未提出（出場者のみ）
+          if (lastMatchDate && daysAgo(lastMatchDate) <= 7) {
+            const played = Object.values(p.gameStats || {}).some(g => Object.values(g || {}).some(r => r && r.date === lastMatchDate));
+            const has = (p.reflections || []).some(r => r.gameDate === lastMatchDate);
+            if (played && !has) { reasons.push('📝 直近試合の振り返り未提出'); score += 3; }
+          }
+          // セルフチェックの急落（最新2回で同一軸が-3以上）
+          const scs = p.selfChecks || [];
+          if (scs.length >= 2 && scs[0].axisScores && scs[1].axisScores) {
+            const dropped = SC_AXES.filter(ax => (scs[1].axisScores[ax.key] || 0) - (scs[0].axisScores[ax.key] || 0) >= 3);
+            if (dropped.length) { reasons.push(`🧭 ${dropped.map(a => a.name).join('・')}が低下`); score += 4; }
+          }
+          // 14日間なにも記録がない
+          const dates = [
+            ...(p.reflections || []).map(r => r.gameDate),
+            ...(p.izofRecords || []).map(r => r.date),
+            ...((ad && ad.checks) || []),
+            ...(p.selfChecks || []).map(r => r.date)
+          ].filter(Boolean).sort();
+          const lastAct = dates[dates.length - 1] || null;
+          if (!lastAct || daysAgo(lastAct) >= 14) { reasons.push('🕳 14日以上記録なし'); score += 2; }
+          return { p, reasons, score };
+        }).filter(r => r.score > 0).sort((a, b) => b.score - a.score).slice(0, 5);
+
+        // 今日のIZOF（試合朝用）
+        const todayIzof = players.map(p => {
+          const rec = (p.izofRecords || []).find(r => r.date === today);
+          if (!rec) return null;
+          const type = normIzofType(p.profile.izofType) || '';
+          let warn = null;
+          if (type === '高覚醒型' && rec.tension <= 2) warn = '上げ直したい？（型より低め）';
+          if (type === '低覚醒型' && rec.tension >= 4) warn = '整えたい？（型より高め）';
+          return { p, rec, type, warn };
+        }).filter(Boolean);
+
+        // 直近試合の振り返り提出率
+        let submitStat = null;
+        if (lastMatchDate) {
+          const played = players.filter(p => Object.values(p.gameStats || {}).some(g => Object.values(g || {}).some(r => r && r.date === lastMatchDate)));
+          if (played.length > 0) {
+            const submitted = played.filter(p => (p.reflections || []).some(r => r.gameDate === lastMatchDate));
+            submitStat = { date: lastMatchDate, submitted: submitted.length, played: played.length, missing: played.filter(p => !(p.reflections || []).some(r => r.gameDate === lastMatchDate)) };
+          }
+        }
+        return { rows, todayIzof, submitStat };
+      }, [players, matches]);
 
       if (selected) {
         return <PlayerDetail player={selected} onBack={() => setSelected(null)} showToast={showToast} />;
@@ -2896,29 +3081,87 @@
             </div>
           </div>
 
+          {/* 今週の気になる選手（自動トリアージ） */}
+          {triage.rows.length > 0 && (
+            <div className="card mt-16" style={{borderLeft:'3px solid var(--warning)'}}>
+              <div className="card-title">👀 今週の気になる選手</div>
+              <div className="card-subtitle">記録のシグナルから自動抽出（タップで詳細へ）。指導や叱責の材料にせず、声かけのきっかけに。</div>
+              {triage.rows.map(({ p, reasons }) => (
+                <div key={p.uid} className="list-item" onClick={() => setSelected(p)} style={{cursor:'pointer'}}>
+                  <div>
+                    <div className="title">{p.profile.name}</div>
+                    <div className="sub">{reasons.join(' ／ ')}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 直近試合の振り返り提出率 */}
+          {triage.submitStat && (
+            <div className="card mt-16">
+              <div className="card-title">📝 直近試合（{triage.submitStat.date}）の振り返り</div>
+              <div className="card-subtitle">
+                提出 {triage.submitStat.submitted} / {triage.submitStat.played}（出場選手）
+                {triage.submitStat.missing.length > 0 && triage.submitStat.missing.length <= 8 && (
+                  <><br/>未提出: {triage.submitStat.missing.map(p => p.profile.name).join('・')}（督促は個別に）</>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 今日のIZOF（試合朝にチーム状態をひと目で） */}
+          {triage.todayIzof.length > 0 && (
+            <div className="card mt-16">
+              <div className="card-title">🎯 今日のIZOF記録 <span className="small">{triage.todayIzof.length} / {players.length}名</span></div>
+              {triage.todayIzof.map(({ p, rec, type, warn }) => (
+                <div key={p.uid} className="stat-row">
+                  <span className="label">{p.profile.name}{type ? `（${type.slice(0,1)}）` : ''}</span>
+                  <span className="value" style={warn ? {color:'var(--warning)'} : undefined}>
+                    緊{rec.tension}・集{rec.focus}・自{rec.confidence}・体{rec.condition}{warn ? `　⚠ ${warn}` : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
           <TeamBoardEdit team={team || {}} saveTeam={saveTeam} showToast={showToast} />
           <CoachVoiceLog team={team || {}} players={players} showToast={showToast} />
 
-          {allConsults.length > 0 && (
-            <>
-              <div className="section-h" style={{color:'var(--warning)'}}>⚠ 相談希望 {allConsults.length}件</div>
-              {allConsults.map((r, i) => (
-                <div
-                  key={r._playerUid + '_' + (r.yearMonth || i)}
-                  className="coach-list-item alert"
-                  onClick={() => {
-                    const p = players.find(pp => pp.uid === r._playerUid);
-                    if (p) setSelected(p);
-                  }}
-                  style={{cursor:'pointer'}}
-                >
-                  <div className="title">{r._playerName} さん（{r.yearMonth}）</div>
-                  <div className="sub">状態: {r.mentalState} / 練習意欲: {r.practiceMotivation}/10</div>
-                  {r.consultDetails && <div className="sub" style={{marginTop:6}}>📝 {r.consultDetails}</div>}
+          {allConsults.length > 0 && (() => {
+            const unacked = allConsults.filter(r => !r._acked);
+            return (
+              <>
+                <div className="section-h" style={{color: unacked.length ? 'var(--warning)' : 'var(--text-2)'}}>
+                  {unacked.length ? `⚠ 相談希望 未対応${unacked.length}件` : '✓ 相談希望（すべて対応済み）'}
                 </div>
-              ))}
-            </>
-          )}
+                {allConsults.map((r, i) => (
+                  <div
+                    key={r._playerUid + '_' + (r.id || r.yearMonth || i)}
+                    className={'coach-list-item' + (r._acked ? '' : ' alert')}
+                    onClick={() => {
+                      const p = players.find(pp => pp.uid === r._playerUid);
+                      if (p) setSelected(p);
+                    }}
+                    style={{cursor:'pointer', opacity: r._acked ? 0.55 : 1}}
+                  >
+                    <div className="title">{r._playerName} さん（{r.yearMonth}）{r._acked && <span className="text-small" style={{marginLeft:8, color:'var(--success)'}}>✓ 対応済み</span>}</div>
+                    <div className="sub">状態: {r.mentalState} / 練習意欲: {r.practiceMotivation}/10</div>
+                    {r.consultDetails && <div className="sub" style={{marginTop:6}}>📝 {r.consultDetails}</div>}
+                    {r.id && (
+                      <button className="btn-ghost" style={{marginTop:8, padding:'6px 10px', fontSize:12}} onClick={async (ev) => {
+                        ev.stopPropagation();
+                        try {
+                          if (r._acked) { await storage.unackConsult(r._playerUid, r.id); showToast('未対応に戻しました'); }
+                          else { await storage.ackConsult(r._playerUid, r.id); showToast('対応済みにしました'); }
+                        } catch (e) { console.warn('[consultAck]', e); showToast('保存できませんでした（ルール適用が必要）'); }
+                      }}>{r._acked ? '未対応に戻す' : '対応済みにする'}</button>
+                    )}
+                  </div>
+                ))}
+              </>
+            );
+          })()}
 
           <div className="section-h">選手一覧 <span className="small">{players.length}名</span></div>
           {players.length === 0 ? (
@@ -2977,6 +3220,31 @@
             <div className="stat-row"><span className="label">登録日</span><span className="value">{p.profile.createdAt ? new Date(p.profile.createdAt).toLocaleDateString('ja-JP') : '-'}</span></div>
           </div>
 
+          {/* セルフチェック（心の5つの力・年3回。本人内の変化のみ・選手間比較はしない） */}
+          {(p.selfChecks || []).length > 0 && (() => {
+            const ROUND_LABEL = { baseline: '1回目(6月)', midterm: '中間(1月)', final: '最終(6月)' };
+            const latest = p.selfChecks[0];
+            const prev = p.selfChecks[1] || null;
+            return (
+              <>
+                <div className="section-h">🧭 心の5つの力 <span className="small">{ROUND_LABEL[latest.round] || latest.round} ・ {latest.date}</span></div>
+                <div className="card">
+                  <SelfCheckBars scores={latest.axisScores} />
+                  {prev && (
+                    <div className="text-small text-muted" style={{marginTop:10}}>
+                      前回（{ROUND_LABEL[prev.round] || prev.round}）比:
+                      {SC_AXES.map(ax => {
+                        const d = (latest.axisScores[ax.key] || 0) - (prev.axisScores[ax.key] || 0);
+                        return ` ${ax.name.slice(0,2)}${d > 0 ? '+' + d : d === 0 ? '±0' : d}`;
+                      }).join(' /')}
+                    </div>
+                  )}
+                  <div className="text-small text-muted" style={{marginTop:6}}>※ 本人内の変化のみを見る。順位化・選手間比較・全体公表はしない。</div>
+                </div>
+              </>
+            );
+          })()}
+
           <div className="section-h">💬 この選手へのメモ（本人と顧問のみ閲覧）</div>
           <div className="card">
             <PlayerNoteAdd uid={p.uid} />
@@ -3001,6 +3269,9 @@
                   <div className="stat-card"><div className="num">{p.statsTotal.goalRate}%</div><div className="label">決定率</div></div>
                 </div>
                 <div className="stat-row mt-16"><span className="label">ターンオーバー</span><span className="value">{p.statsTotal.turnovers}回</span></div>
+                {p.statsTotal.faced > 0 && (
+                  <div className="stat-row"><span className="label">🧤 GK</span><span className="value">{p.statsTotal.saves}セーブ / 枠内{p.statsTotal.faced}本（{p.statsTotal.saveRate}%）</span></div>
+                )}
               </div>
               {p.statsGames.slice(0, 8).map(g => (
                 <div key={g.gameId} className="list-item">
@@ -3149,7 +3420,7 @@
     }
 
     // ====== My Stats (選手用: 自分のCSV取込済データを表示) ======
-    function MyStats({ state, myGameStats, onNav }) {
+    function MyStats({ state, myGameStats, onNav, onWriteReflection }) {
       const [selectedGame, setSelectedGame] = useState(null);
 
       const { games, total } = useMemo(() => aggregateGameStats(myGameStats), [myGameStats]);
@@ -3164,7 +3435,7 @@
       }, [state.reflections]);
 
       if (selectedGame) {
-        return <GameDetail game={selectedGame} reflection={reflectionsByDate[selectedGame.date]} onBack={() => setSelectedGame(null)} />;
+        return <GameDetail game={selectedGame} reflection={reflectionsByDate[selectedGame.date]} onBack={() => setSelectedGame(null)} onWriteReflection={onWriteReflection} />;
       }
 
       return (
@@ -3256,7 +3527,7 @@
       );
     }
 
-    function GameDetail({ game, reflection, onBack }) {
+    function GameDetail({ game, reflection, onBack, onWriteReflection }) {
       // コース別集計
       const courseStats = {};
       game.rows.filter(r => r.mode === 'attack' && r.result !== 'turnover').forEach(r => {
@@ -3341,8 +3612,13 @@
             <div className="card mt-16">
               <div className="card-title">この試合のメンタル振り返りはまだ未記録</div>
               <div className="card-subtitle">
-                「振り返り」タブから {game.date} の振り返りを追加すると、ここに数字と感情を並べて見られます。
+                振り返りを書くと、ここに数字と感情を並べて見られます。
               </div>
+              {onWriteReflection && (
+                <button className="btn mt-16" onClick={() => onWriteReflection({ gameDate: game.date, opponent: game.opponent })}>
+                  📝 この試合の振り返りを書く（日付・相手は入力済み）
+                </button>
+              )}
             </div>
           )}
         </>
