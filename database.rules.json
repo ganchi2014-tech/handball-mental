@@ -27,6 +27,18 @@
       ".write": false
     },
 
+    "staff": {
+      ".read": "auth != null",
+      ".write": false
+    },
+
+    "physicals": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('coaches').child(auth.uid).exists() || root.child('staff').child(auth.uid).exists())",
+        ".write": "auth != null && (auth.uid === $uid || root.child('coaches').child(auth.uid).exists() || root.child('staff').child(auth.uid).exists())"
+      }
+    },
+
     "team": {
       ".read": "auth != null",
       ".write": "auth != null && root.child('coaches').child(auth.uid).exists()",

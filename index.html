@@ -758,6 +758,31 @@
       markMatchImported: async (matchId, coachUid) => {
         if (!fbDB) return;
         return fbDB.ref('matches/' + matchId + '/importedAt').set(firebase.database.ServerValue.TIMESTAMP);
+      },
+      // ----- フィジカル測定（physicals/{uid}/{recordId}。state とは別ノード） -----
+      // 本人・顧問・マネージャー(staff) が読み書き可（セキュリティルールでゲート）
+      savePhysical: async (targetUid, rec) => {
+        if (!fbDB || !targetUid || !rec || !rec.id) return;
+        return fbDB.ref('physicals/' + targetUid + '/' + rec.id).set(rec);
+      },
+      delPhysical: async (targetUid, recId) => {
+        if (!fbDB || !targetUid || !recId) return;
+        return fbDB.ref('physicals/' + targetUid + '/' + recId).remove();
+      },
+      subscribePhysicals: (targetUid, callback) => {
+        if (!fbDB || !targetUid) return () => {};
+        const ref = fbDB.ref('physicals/' + targetUid);
+        const handler = ref.on('value',
+          (snap) => callback(Object.values(snap.val() || {})),
+          () => callback([]));
+        return () => ref.off('value', handler);
+      },
+      // ----- マネージャー承認リスト（coaches と同様 Console から手動登録） -----
+      subscribeStaff: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('staff');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
+        return () => ref.off('value', handler);
       }
     };
 
@@ -859,8 +884,10 @@
       const [roster, setRoster] = useState({});         // {rosterId: {...}}
       const [rosterToUid, setRosterToUid] = useState({}); // {rosterId: authUid}
       const [coaches, setCoaches] = useState({});         // {authUid: true} 顧問承認リスト
+      const [staff, setStaff] = useState({});             // {authUid: true} マネージャー承認リスト
       const [team, setTeam] = useState({});               // チームボード（合言葉・ルール等）
       const [myGameStats, setMyGameStats] = useState({}); // 自分のCSV取込済データ
+      const [myPhysicals, setMyPhysicals] = useState([]); // 自分のフィジカル測定（配列）
       const [matches, setMatches] = useState({});         // クラウド試合（analyzer保存）
       const [autoImport, setAutoImport] = useState(() => localStorage.getItem('mental_auto_import') === '1');
       const lastCloudJsonRef = useRef('');
@@ -876,16 +903,26 @@
         const unsub2 = storage.subscribeRosterToUid(setRosterToUid);
         const unsub3 = storage.subscribeCoaches(setCoaches);
         const unsub4 = storage.subscribeTeam(setTeam);
-        return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
+        const unsub5 = storage.subscribeStaff(setStaff);
+        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); };
       }, []);
 
       // 顧問承認済みか（サーバ /coaches に登録されているか）
       const isApprovedCoach = !!(authUid && coaches[authUid]);
+      // マネージャー承認済みか（サーバ /staff に登録されているか）。実権限は常にこれでゲート
+      const isApprovedStaff = !!(authUid && staff[authUid]);
 
       // ── 自分の試合データ（CSV取込済）購読
       useEffect(() => {
         if (!authUid) { setMyGameStats({}); return; }
         const unsub = storage.subscribeMyGameStats(authUid, setMyGameStats);
+        return unsub;
+      }, [authUid]);
+
+      // ── 自分のフィジカル測定購読
+      useEffect(() => {
+        if (!authUid) { setMyPhysicals([]); return; }
+        const unsub = storage.subscribePhysicals(authUid, setMyPhysicals);
         return unsub;
       }, [authUid]);
 
@@ -1095,6 +1132,35 @@
         setState(defaultState());
       };
 
+      // ── マネージャー専用画面: フィジカル入力のみ（メンタルデータには一切触れさせない）
+      // 実権限は常に isApprovedStaff でゲート。isManager はローカルの表示トグル。
+      if (state.user.isManager && isApprovedStaff) {
+        return (
+          <div className="app">
+            <Header
+              user={state.user}
+              syncStatus={syncStatus}
+              onLogout={handleLogout}
+              onCoachToggle={() => update({ user: { ...state.user, isManager: !state.user.isManager } })}
+              canCoach={isApprovedStaff}
+              coachToggleLabel={{ on: '通常モードに戻る', off: 'マネージャーモードに切替' }}
+              team={team}
+            />
+            <div className="content">
+              <PhysicalAdmin
+                roster={roster}
+                rosterToUid={rosterToUid}
+                authUid={authUid}
+                byRole="manager"
+                showToast={showToast}
+                heading="マネージャー: フィジカル入力"
+              />
+            </div>
+            {toast && <div className="toast">{toast}</div>}
+          </div>
+        );
+      }
+
       return (
         <div className="app">
           <Header
@@ -1103,6 +1169,7 @@
             onLogout={handleLogout}
             onCoachToggle={() => update({ user: { ...state.user, isCoach: !state.user.isCoach } })}
             canCoach={state.user.isCoach || isApprovedCoach}
+            onManagerToggle={isApprovedStaff ? (() => update({ user: { ...state.user, isManager: true } })) : null}
             team={team}
           />
           <div className="content">
@@ -1136,7 +1203,18 @@
               <Monthly state={state} update={update} showToast={showToast} />
             )}
             {view === 'stats' && !state.user.isCoach && (
-              <MyStats state={state} myGameStats={myGameStats} onNav={setView} onWriteReflection={openReflection} />
+              <MyStats state={state} myGameStats={myGameStats} myPhysicals={myPhysicals} authUid={authUid} onNav={setView} onWriteReflection={openReflection} showToast={showToast} />
+            )}
+            {view === 'physadmin' && state.user.isCoach && isApprovedCoach && (
+              <PhysicalAdmin
+                roster={roster}
+                rosterToUid={rosterToUid}
+                authUid={authUid}
+                byRole="coach"
+                showToast={showToast}
+                heading="フィジカル入力"
+                onBack={() => setView('coach')}
+              />
             )}
             {view === 'coach' && state.user.isCoach && (
               isApprovedCoach ? (
@@ -1154,6 +1232,7 @@
                   showToast={showToast}
                   team={team}
                   saveTeam={storage.saveTeam}
+                  onNav={setView}
                 />
               ) : (
                 <CoachApprovalPending myUid={authUid} showToast={showToast} />
@@ -1438,8 +1517,9 @@
     }
 
     // ====== Header ======
-    function Header({ user, syncStatus, onLogout, onCoachToggle, canCoach, team }) {
+    function Header({ user, syncStatus, onLogout, onCoachToggle, canCoach, team, onManagerToggle, coachToggleLabel }) {
       const [menuOpen, setMenuOpen] = useState(false);
+      const ctLabel = coachToggleLabel || { on: '選手モードに戻る', off: '顧問モードに切替' };
       const syncDot = {
         cache:   { color: '#94a3b8', title: 'ローカルのみ' },
         syncing: { color: '#fbbf24', title: 'クラウド同期中...' },
@@ -1473,7 +1553,12 @@
               <div style={{position:'absolute', top:60, right:16, background:'var(--bg-2)', border:'1px solid var(--border)', borderRadius:10, padding:8, zIndex:50}}>
                 {canCoach && (
                   <button className="btn-ghost" style={{display:'block', width:'100%', textAlign:'left'}} onClick={() => { onCoachToggle(); setMenuOpen(false); }}>
-                    {user.isCoach ? '選手モードに戻る' : '顧問モードに切替'}
+                    {(user.isCoach || user.isManager) ? ctLabel.on : ctLabel.off}
+                  </button>
+                )}
+                {onManagerToggle && (
+                  <button className="btn-ghost" style={{display:'block', width:'100%', textAlign:'left'}} onClick={() => { onManagerToggle(); setMenuOpen(false); }}>
+                    マネージャーモードに切替
                   </button>
                 )}
                 <button className="btn-ghost" style={{display:'block', width:'100%', textAlign:'left'}} onClick={() => { setMenuOpen(false); onLogout(); }}>
@@ -2256,6 +2341,25 @@
     ];
     const SC_NUM = ['①','②','③','④','⑤'];
     const scRoundLabel = (r) => ({baseline:'1回目(6月)', midterm:'中間(1月)', final:'最終(6月)'}[r] || r);
+
+    // ====== フィジカル測定 種目定義（全員 + GK専用） ======
+    // lowerIsBetter: true=小さいほど良い（タイム系） / false=大きいほど良い（距離・回数・保持秒）
+    const PHYS_ITEMS = [
+      { key:'sprint10m',  name:'10m走',            unit:'秒',  lowerIsBetter:true,  group:'all' },
+      { key:'cod505_R',   name:'505切り返し(右)',  unit:'秒',  lowerIsBetter:true,  group:'all' },
+      { key:'cod505_L',   name:'505切り返し(左)',  unit:'秒',  lowerIsBetter:true,  group:'all' },
+      { key:'broadJump',  name:'立ち幅跳び',        unit:'cm', lowerIsBetter:false, group:'all' },
+      { key:'sideStep',   name:'反復横跳び',        unit:'回', lowerIsBetter:false, group:'all' },
+      { key:'shuttleRun', name:'20mシャトルラン',   unit:'回', lowerIsBetter:false, group:'all' },
+      { key:'balance_R',  name:'片脚閉眼(右)',      unit:'秒', lowerIsBetter:false, group:'all' },
+      { key:'balance_L',  name:'片脚閉眼(左)',      unit:'秒', lowerIsBetter:false, group:'all' },
+      { key:'gkPush_R',   name:'横プッシュオフ(右)', unit:'cm', lowerIsBetter:false, group:'gk' },
+      { key:'gkPush_L',   name:'横プッシュオフ(左)', unit:'cm', lowerIsBetter:false, group:'gk' },
+      { key:'gkSplit',    name:'開脚幅',            unit:'cm', lowerIsBetter:false, group:'gk' },
+      { key:'gkReact',    name:'反応(合図からセーブ)', unit:'秒', lowerIsBetter:true,  group:'gk' },
+    ];
+    // 対象選手がGKか否かで表示する種目を絞る
+    const physItemsFor = (isGK) => PHYS_ITEMS.filter(it => it.group === 'all' || (isGK && it.group === 'gk'));
 
     function SelfCheckBars({ scores }) {
       return (
@@ -3123,7 +3227,7 @@
     }
 
     // ====== Coach Dashboard (P2: 全選手データを Firebase RTDB から購読) ======
-    function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, autoImport, onToggleAutoImport, importMatch, isApprovedCoach, myUid, showToast, team, saveTeam }) {
+    function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, autoImport, onToggleAutoImport, importMatch, isApprovedCoach, myUid, showToast, team, saveTeam, onNav }) {
       const [selected, setSelected] = useState(null);
       const [tab, setTab] = useState('overview'); // overview / roster / csv / cloud
 
@@ -3274,6 +3378,7 @@
               {pendingMatchCount > 0 && <span style={{position:'absolute', top:-6, right:-6, background:'var(--warning)', color:'#000', borderRadius:10, fontSize:11, fontWeight:'bold', padding:'2px 7px'}}>{pendingMatchCount}</span>}
             </button>
             <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => setTab('csv')}>📥 CSVファイル取込</button>
+            <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => onNav && onNav('physadmin')}>💪 フィジカル入力</button>
           </div>
 
           <div className="card">
@@ -3584,6 +3689,354 @@
       );
     }
 
+    // ====== フィジカル測定: 集計・グラフ・入力（選手/顧問/マネージャー共通） ======
+    // 値を「測定済みの種目だけ」抽出して数値化
+    const physVal = (rec, key) => {
+      const v = rec && rec.items ? rec.items[key] : undefined;
+      return (v === '' || v === null || v === undefined || isNaN(Number(v))) ? null : Number(v);
+    };
+
+    // 1種目の時系列（古→新）を取り出す。{date, val} の配列
+    function physSeries(records, key) {
+      return (records || [])
+        .map(r => ({ date: r.date || '', val: physVal(r, key) }))
+        .filter(p => p.val !== null)
+        .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    }
+
+    // 自己ベスト（lowerIsBetter を考慮）
+    const physBest = (series, lowerIsBetter) => {
+      if (!series.length) return null;
+      return series.reduce((best, p) =>
+        best === null ? p.val : (lowerIsBetter ? Math.min(best, p.val) : Math.max(best, p.val)), null);
+    };
+
+    // 直近の変化が「良化」かどうか（lowerIsBetter を考慮）。null=判定不能/横ばい
+    function physTrend(series, lowerIsBetter) {
+      if (series.length < 2) return { dir: 0, diff: 0 };
+      const last = series[series.length - 1].val;
+      const prev = series[series.length - 2].val;
+      const raw = last - prev; // 生の差
+      if (raw === 0) return { dir: 0, diff: 0 };
+      const improved = lowerIsBetter ? raw < 0 : raw > 0;
+      return { dir: improved ? 1 : -1, diff: raw };
+    }
+
+    // 1種目の推移をインラインSVG折れ線で（GameDetailのSVG前例に倣う）
+    function PhysicalChart({ series, lowerIsBetter }) {
+      const W = 100, H = 36, padX = 4, padY = 5;
+      if (!series.length) return null;
+      const vals = series.map(p => p.val);
+      let min = Math.min(...vals), max = Math.max(...vals);
+      if (min === max) { min -= 1; max += 1; } // 1点 or 全部同値でも描けるように
+      const x = (i) => series.length === 1 ? W / 2 : padX + (i / (series.length - 1)) * (W - padX * 2);
+      // y: 画面は上が0なので、良い値を上に出すため lowerIsBetter のとき反転
+      const norm = (v) => (v - min) / (max - min); // 0..1（大きいほど上にしたい量）
+      const y = (v) => {
+        const up = lowerIsBetter ? (1 - norm(v)) : norm(v); // 良いほど1
+        return padY + (1 - up) * (H - padY * 2);
+      };
+      const pts = series.map((p, i) => `${x(i)},${y(p.val)}`).join(' ');
+      const lastImproved = (() => {
+        const t = physTrend(series, lowerIsBetter);
+        return t.dir;
+      })();
+      const lineColor = lastImproved === 1 ? 'var(--success)' : (lastImproved === -1 ? '#f5a900' : 'var(--primary)');
+      return (
+        <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%', height:48, background:'rgba(255,255,255,0.04)', borderRadius:8}}>
+          {series.length > 1 && <polyline points={pts} fill="none" stroke={lineColor} strokeWidth="1" strokeLinejoin="round" strokeLinecap="round" />}
+          {series.map((p, i) => (
+            <circle key={i} cx={x(i)} cy={y(p.val)} r={i === series.length - 1 ? 2 : 1.4}
+              fill={i === series.length - 1 ? lineColor : 'rgba(255,255,255,0.6)'} />
+          ))}
+        </svg>
+      );
+    }
+
+    // フィジカル表示+記録（MyStats / Playerには「自分の」、AdminにはなしでEditorを直接使う）
+    function PhysicalSection({ records, isGK, canEdit, onAddClick, onDelete }) {
+      const items = physItemsFor(isGK);
+      const recs = records || [];
+      const measuredItems = items.filter(it => physSeries(recs, it.key).length > 0);
+      return (
+        <>
+          <div className="section-h">💪 フィジカル測定</div>
+          {canEdit && (
+            <button className="btn mb-16" onClick={onAddClick}>+ フィジカルを記録する</button>
+          )}
+          {recs.length === 0 ? (
+            <div className="card">
+              <div className="card-title">まだ測定記録がありません</div>
+              <div className="card-subtitle">
+                スピード・切り返し・跳躍などを測って記録すると、自分の成長が線で見えます。<br/>
+                比べるのは <b>過去の自分とだけ</b>。1回の数字で決めつけない。
+              </div>
+            </div>
+          ) : measuredItems.length === 0 ? (
+            <div className="card"><div className="card-subtitle">記録はありますが、まだ数値の入った種目がありません。</div></div>
+          ) : (
+            <div className="phys-grid" style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
+              {measuredItems.map(it => {
+                const series = physSeries(recs, it.key);
+                const latest = series[series.length - 1];
+                const best = physBest(series, it.lowerIsBetter);
+                const trend = physTrend(series, it.lowerIsBetter);
+                const isBest = best !== null && latest.val === best;
+                const arrow = trend.dir === 1 ? '▲' : (trend.dir === -1 ? '▼' : '–');
+                const arrowColor = trend.dir === 1 ? 'var(--success)' : (trend.dir === -1 ? '#f5a900' : 'var(--text-3)');
+                return (
+                  <div key={it.key} className="card" style={{padding:12}}>
+                    <div className="card-title" style={{fontSize:13}}>{it.name}</div>
+                    <div style={{display:'flex', alignItems:'baseline', gap:6, marginTop:4}}>
+                      <span style={{fontSize:22, fontWeight:800}}>{latest.val}</span>
+                      <span className="text-small text-muted">{it.unit}</span>
+                      <span style={{marginLeft:'auto', color:arrowColor, fontWeight:700, fontSize:13}}>
+                        {arrow}{trend.dir !== 0 ? Math.abs(trend.diff) : ''}
+                      </span>
+                    </div>
+                    <div className="text-small text-muted" style={{marginTop:2}}>
+                      自己ベスト {best}{it.unit}{isBest && <span style={{color:'var(--success)', marginLeft:6}}>★更新</span>}
+                    </div>
+                    <PhysicalChart series={series} lowerIsBetter={it.lowerIsBetter} />
+                    <div className="text-small text-muted" style={{marginTop:2}}>{latest.date}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {recs.length > 0 && (
+            <>
+              <div className="section-h">測定履歴 <span className="small">{recs.length}回</span></div>
+              {recs.slice().sort((a,b) => (b.date||'').localeCompare(a.date||'')).map(r => {
+                const filled = items.filter(it => physVal(r, it.key) !== null);
+                return (
+                  <div key={r.id} className="list-item">
+                    <div>
+                      <div className="title">{r.date}</div>
+                      <div className="sub">{filled.length ? filled.map(it => `${it.name} ${physVal(r,it.key)}${it.unit}`).join(' / ') : '（数値なし）'}</div>
+                      {r.byRole && <div className="sub" style={{marginTop:2, color:'var(--text-3)'}}>記録: {r.byRole === 'self' ? '本人' : (r.byRole === 'coach' ? '顧問' : 'マネージャー')}</div>}
+                      {r.memo && <div className="sub" style={{marginTop:2}}>📝 {r.memo}</div>}
+                    </div>
+                    {canEdit && onDelete && (
+                      <div className="right">
+                        <button className="btn-ghost" style={{padding:'6px 10px', fontSize:12}} onClick={() => onDelete(r)}>削除</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </>
+      );
+    }
+
+    // フィジカル入力モーダル（SelfCheckEditor を雛形に）
+    function PhysicalEditor({ isGK, byRole, authUid, targetName, onSave, onCancel }) {
+      const items = physItemsFor(isGK);
+      const [date, setDate] = useState(todayStr());
+      const [vals, setVals] = useState({}); // {key: string}
+      const [memo, setMemo] = useState('');
+      const setVal = (key, v) => setVals(prev => ({ ...prev, [key]: v }));
+
+      const submit = () => {
+        const itemsObj = {};
+        items.forEach(it => {
+          const raw = vals[it.key];
+          if (raw === '' || raw === undefined || raw === null) return; // 空欄は未測定として除外
+          const n = Number(raw);
+          if (!isNaN(n)) itemsObj[it.key] = n;
+        });
+        if (Object.keys(itemsObj).length === 0) {
+          if (!confirm('数値が1つも入っていません。このまま保存しますか？')) return;
+        }
+        const rec = {
+          id: uid(),
+          date: date || todayStr(),
+          items: itemsObj,
+          by: authUid || '',
+          byRole: byRole || 'self',
+          createdAt: Date.now()
+        };
+        if (memo.trim()) rec.memo = memo.trim();
+        onSave(rec);
+      };
+
+      // 全員種目 / GK種目で見出しを分ける
+      const allItems = items.filter(it => it.group === 'all');
+      const gkItems = items.filter(it => it.group === 'gk');
+      const renderItem = (it) => (
+        <div key={it.key} className="form-group">
+          <label>{it.name}（{it.unit}）{it.lowerIsBetter ? ' ↓速い/小さいほど良い' : ' ↑大きいほど良い'}</label>
+          <input
+            type="number" inputMode="decimal" step="any"
+            value={vals[it.key] === undefined ? '' : vals[it.key]}
+            onChange={e => setVal(it.key, e.target.value)}
+            placeholder="未測定なら空欄"
+          />
+        </div>
+      );
+
+      return (
+        <div className="modal-overlay" onClick={() => { if (confirm('入力中の内容は保存されません。閉じますか？')) onCancel(); }}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">フィジカル測定{targetName ? `: ${targetName}` : ''}</div>
+              <button className="modal-close" onClick={onCancel}>×</button>
+            </div>
+            <div className="text-small text-muted mb-16">
+              測った種目だけ入力（空欄はスキップ）。比べるのは過去の自分とだけ。
+            </div>
+            <div className="form-group">
+              <label>測定日</label>
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+            </div>
+            {allItems.map(renderItem)}
+            {gkItems.length > 0 && (
+              <>
+                <div className="section-h" style={{fontSize:14, marginTop:8}}>🧤 GK専用</div>
+                {gkItems.map(renderItem)}
+              </>
+            )}
+            <div className="form-group">
+              <label>メモ（任意）</label>
+              <input value={memo} onChange={e => setMemo(e.target.value)} placeholder="コンディション・測定条件など" />
+            </div>
+            <button className="btn" onClick={submit}>保存</button>
+          </div>
+        </div>
+      );
+    }
+
+    // 顧問・マネージャー用: 名簿から選手を選んでフィジカル入力
+    function PhysicalAdmin({ roster, rosterToUid, authUid, byRole, showToast, heading, onBack }) {
+      const [selectedRid, setSelectedRid] = useState(null);
+      const [filterGrade, setFilterGrade] = useState('all');
+      const [editing, setEditing] = useState(false);
+      const [records, setRecords] = useState([]);
+
+      // 名簿を配列化（学年・苗字順）
+      const entries = useMemo(() => {
+        const arr = Object.entries(roster || {}).map(([id, data]) => ({
+          id,
+          ...data,
+          grade: computeGrade(data.enrollmentYear),
+          displayName: rosterDisplayName(data),
+          linkedUid: (rosterToUid && rosterToUid[id]) || null
+        })).filter(e => e.active !== false);
+        arr.sort((a, b) => {
+          if (a.grade !== b.grade) return a.grade - b.grade;
+          return (a.surname || '').localeCompare(b.surname || '', 'ja');
+        });
+        return arr;
+      }, [roster, rosterToUid]);
+
+      const filtered = filterGrade === 'all' ? entries : entries.filter(e => e.grade === Number(filterGrade));
+      const selected = entries.find(e => e.id === selectedRid) || null;
+      const targetUid = selected ? selected.linkedUid : null;
+
+      // 選択中の選手のフィジカルを購読
+      useEffect(() => {
+        if (!targetUid) { setRecords([]); return; }
+        const unsub = storage.subscribePhysicals(targetUid, setRecords);
+        return unsub;
+      }, [targetUid]);
+
+      const save = async (rec) => {
+        if (!targetUid) { showToast('この選手は未連携のため保存できません'); return; }
+        try {
+          await storage.savePhysical(targetUid, rec);
+          setEditing(false);
+          showToast('保存しました');
+        } catch (e) {
+          console.warn('[savePhysical]', e);
+          showToast('保存できませんでした（権限・ルールを確認）');
+        }
+      };
+
+      const del = async (rec) => {
+        if (!targetUid || !rec || !rec.id) return;
+        if (!confirm(`${rec.date} の記録を削除しますか？`)) return;
+        try { await storage.delPhysical(targetUid, rec.id); showToast('削除しました'); }
+        catch (e) { console.warn('[delPhysical]', e); showToast('削除できませんでした'); }
+      };
+
+      // 選手詳細（選択後）
+      if (selected) {
+        return (
+          <>
+            <button className="btn-ghost mb-16" onClick={() => setSelectedRid(null)}>← 選手一覧に戻る</button>
+            <div className="section-h">{selected.displayName} {selected.isGK && <span className="badge-coach">GK</span>}</div>
+            {!targetUid ? (
+              <div className="card">
+                <div className="card-title">この選手は mental 未連携です</div>
+                <div className="card-subtitle">
+                  選手がアプリにログイン（名簿から自分を選択）して連携すると、フィジカルを記録できます。
+                </div>
+              </div>
+            ) : (
+              <PhysicalSection
+                records={records}
+                isGK={!!selected.isGK}
+                canEdit={true}
+                onAddClick={() => setEditing(true)}
+                onDelete={del}
+              />
+            )}
+            {editing && targetUid && (
+              <PhysicalEditor
+                isGK={!!selected.isGK}
+                byRole={byRole}
+                authUid={authUid}
+                targetName={selected.displayName}
+                onSave={save}
+                onCancel={() => setEditing(false)}
+              />
+            )}
+          </>
+        );
+      }
+
+      // 名簿一覧
+      return (
+        <>
+          {onBack && <button className="btn-ghost mb-16" onClick={onBack}>← 戻る</button>}
+          <div className="section-h">{heading || 'フィジカル入力'} <span className="small">{entries.length}名</span></div>
+          <div className="card mb-16">
+            <div className="card-subtitle">
+              選手を選んで測定値を入力します。未連携の選手には入力できません（選手のログインが必要）。
+            </div>
+          </div>
+          {entries.length > 0 && (
+            <div className="chip-group" style={{marginBottom:12, flexWrap:'wrap'}}>
+              {['all','1','2','3'].map(g => (
+                <div key={g} className={'chip ' + (filterGrade === g ? 'selected' : '')}
+                  onClick={() => setFilterGrade(g)}
+                >{g === 'all' ? '全' : g + '年'}</div>
+              ))}
+            </div>
+          )}
+          {filtered.length === 0 ? (
+            <div className="empty"><div className="empty-icon">📋</div><div>名簿がありません</div></div>
+          ) : filtered.map(e => (
+            <div key={e.id} className="list-item" onClick={() => setSelectedRid(e.id)} style={{cursor:'pointer'}}>
+              <div>
+                <div className="title">{e.displayName} {e.isGK && <span className="text-small text-muted">/ GK</span>}</div>
+                <div className="sub">
+                  {e.grade > 0 && e.grade <= 3 ? `${e.grade}年` : '卒業/不明'}
+                  {e.position && ` / ${e.position}`}
+                </div>
+                <div className="sub" style={{marginTop:4, color: e.linkedUid ? 'var(--accent)' : 'var(--text-3)'}}>
+                  {e.linkedUid ? '✓ 連携済（入力可）' : '◯ 未連携（入力不可）'}
+                </div>
+              </div>
+              <div className="right"><div className="sub">›</div></div>
+            </div>
+          ))}
+        </>
+      );
+    }
+
     // ====== gameStats 集計（選手・顧問で共通） ======
     function aggregateGameStats(myGameStats) {
       const games = Object.entries(myGameStats || {}).map(([gameId, rows]) => {
@@ -3636,10 +4089,32 @@
     }
 
     // ====== My Stats (選手用: 自分のCSV取込済データを表示) ======
-    function MyStats({ state, myGameStats, onNav, onWriteReflection }) {
+    function MyStats({ state, myGameStats, myPhysicals, authUid, onNav, onWriteReflection, showToast }) {
       const [selectedGame, setSelectedGame] = useState(null);
+      const [physEditing, setPhysEditing] = useState(false);
 
       const { games, total } = useMemo(() => aggregateGameStats(myGameStats), [myGameStats]);
+
+      // 自分がGKか（名簿の position / state.user.position から判定）
+      const myIsGK = (state.user && (state.user.isGK || state.user.position === 'GK')) || false;
+
+      const savePhys = async (rec) => {
+        if (!authUid) { showToast && showToast('保存できませんでした（未ログイン）'); return; }
+        try {
+          await storage.savePhysical(authUid, rec);
+          setPhysEditing(false);
+          showToast && showToast('保存しました');
+        } catch (e) {
+          console.warn('[savePhysical self]', e);
+          showToast && showToast('保存できませんでした（権限・ルールを確認）');
+        }
+      };
+      const delPhys = async (rec) => {
+        if (!authUid || !rec || !rec.id) return;
+        if (!confirm(`${rec.date} の記録を削除しますか？`)) return;
+        try { await storage.delPhysical(authUid, rec.id); showToast && showToast('削除しました'); }
+        catch (e) { console.warn('[delPhysical self]', e); showToast && showToast('削除できませんでした'); }
+      };
 
       // 振り返りと試合データの紐付け
       const reflectionsByDate = useMemo(() => {
@@ -3665,6 +4140,16 @@
               </div>
             </>
           )}
+
+          {/* フィジカル測定（自分のphysicals） */}
+          <PhysicalSection
+            records={myPhysicals}
+            isGK={myIsGK}
+            canEdit={true}
+            onAddClick={() => setPhysEditing(true)}
+            onDelete={delPhys}
+          />
+
           <div className="section-h">マイ統計（試合データ）</div>
 
           {games.length === 0 ? (
@@ -3738,6 +4223,16 @@
                 );
               })}
             </>
+          )}
+
+          {physEditing && (
+            <PhysicalEditor
+              isGK={myIsGK}
+              byRole="self"
+              authUid={authUid}
+              onSave={savePhys}
+              onCancel={() => setPhysEditing(false)}
+            />
           )}
         </>
       );
