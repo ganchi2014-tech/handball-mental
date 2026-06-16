@@ -18,7 +18,11 @@
   </script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Babel はメジャー無指定だと unpkg が latest を返す。v8 で JSX が自動ランタイム化し
+       `import { jsx } from "react/jsx-runtime"` を出力→インラインscriptでは
+       "Cannot use import statement outside a module" となり全体が実行されず白画面化する。
+       classicランタイム（React.createElement 出力）の v7 系に固定する。2026-06 対応。 -->
+  <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
 
   <!-- Firebase SDK v10 (compat mode for browser-side Babel) -->
   <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
