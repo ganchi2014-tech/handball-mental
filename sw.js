@@ -3,7 +3,9 @@
 // 圏外では React/Babel が読めずアプリが白画面になっていた → v3でCDNもプリキャッシュ。
 // v3の問題: index.html もキャッシュ優先だったため、デプロイしても各端末が古い版を表示し続け、
 // 新機能（例: フィジカル入力ボタン）が出なかった → v4でHTMLは network-first（オンライン時は常に最新）。
-const CACHE_NAME = 'handball-mental-v4';
+// v4の問題: ASSETS の @babel/standalone がバージョン無指定(=latest=v8)で index.html(@7.26.4固定)と不一致。
+// 圏外では固定版(@7.26.4)がプリキャッシュされず白画面になり得た → v5で @7.26.4 に統一（白画面固定の貫徹）。
+const CACHE_NAME = 'handball-mental-v5';
 
 // アプリ起動に必要な全資産（CDN含む）を初回インストール時にプリキャッシュ
 const ASSETS = [
@@ -12,7 +14,7 @@ const ASSETS = [
   './manifest.json',
   'https://unpkg.com/react@18/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
-  'https://unpkg.com/@babel/standalone/babel.min.js',
+  'https://unpkg.com/@babel/standalone@7.26.4/babel.min.js',
   'https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js',
   'https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js',
   'https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js'

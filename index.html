@@ -2380,24 +2380,27 @@
     // 測定誤差帯（A: 基準比%表示で「±この範囲は横ばい＝誤差内」とみなすグレー帯）の既定値[%]。
     // 4週ごとの1区間差は typical error に埋もれるため、暫定の汎用値。種目別の実測 TE が出たら tePct で上書き。
     const PHYS_TE_PCT_DEFAULT = 5;
+    // tePct: 種目別の測定誤差帯[%]。リサーチ部門の文献近似（屋外電子計時 CV≈2.5-4% / 屋内・相互計測≈5-7% /
+    //        COD・反応・GK系は ms級ばらつき大）。暫定値で、最終は現場の再現測定(各指標8回程度)で実TEを推定し較正する。
+    //        未指定は ±PHYS_TE_PCT_DEFAULT(5%)。selfOnly: 査読済みの外部基準値が無く「自己比較のみ」で運用する指標。
     const PHYS_ITEMS = [
-      { key:'sprint10m',  name:'10m走',            unit:'秒',  lowerIsBetter:true,  group:'all' },
-      { key:'cod505_R',   name:'505切り返し(右)',  unit:'秒',  lowerIsBetter:true,  group:'all' },
-      { key:'cod505_L',   name:'505切り返し(左)',  unit:'秒',  lowerIsBetter:true,  group:'all' },
+      { key:'sprint10m',  name:'10m走',            unit:'秒',  lowerIsBetter:true,  group:'all', tePct:4 },
+      { key:'cod505_R',   name:'505切り返し(右)',  unit:'秒',  lowerIsBetter:true,  group:'all', tePct:7 },
+      { key:'cod505_L',   name:'505切り返し(左)',  unit:'秒',  lowerIsBetter:true,  group:'all', tePct:7 },
       { key:'broadJump',  name:'立ち幅跳び',        unit:'cm', lowerIsBetter:false, group:'all' },
       { key:'sideStep',   name:'反復横跳び',        unit:'回', lowerIsBetter:false, group:'all' },
       { key:'shuttleRun', name:'20mシャトルラン',   unit:'回', lowerIsBetter:false, group:'all' },
       { key:'balance_R',  name:'片脚閉眼(右)',      unit:'秒', lowerIsBetter:false, group:'all' },
       { key:'balance_L',  name:'片脚閉眼(左)',      unit:'秒', lowerIsBetter:false, group:'all' },
       // ↓ 再検証(2026-06-18)で計画に明記した新指標。キーは既存に合わせ camelCase。
-      { key:'brakeScore',         name:'制動スコア(減速)',   unit:'点', lowerIsBetter:false, group:'all' }, // rank2: 制動到達距離・現場ルーブリック（減速＝看板能力）。点=ルーブリック評点
-      { key:'reactAccPct',        name:'反応 初動正答率',     unit:'%',  lowerIsBetter:false, group:'all' }, // rank13/17: CP反応 R2/R3 初動正答%
-      { key:'fastbreakFinishPct', name:'速攻フィニッシュ率',  unit:'%',  lowerIsBetter:false, group:'all' }, // rank13: 連続速攻6本のシュート到達率
-      { key:'fastbreakOutletSec', name:'速攻アウトレット秒',  unit:'秒', lowerIsBetter:true,  group:'all' }, // rank15: GKセーブ→第1波ウイング着球の秒数
+      { key:'brakeScore',         name:'制動スコア(減速)',   unit:'点', lowerIsBetter:false, group:'all', tePct:7 }, // rank2: 制動到達距離・現場ルーブリック（減速＝看板能力）。点=ルーブリック評点
+      { key:'reactAccPct',        name:'反応 初動正答率',     unit:'%',  lowerIsBetter:false, group:'all', tePct:7 }, // rank13/17: CP反応 R2/R3 初動正答%
+      { key:'fastbreakFinishPct', name:'速攻フィニッシュ率',  unit:'%',  lowerIsBetter:false, group:'all', tePct:8 }, // rank13: 連続速攻6本のシュート到達率（少数試行で分散大）
+      { key:'fastbreakOutletSec', name:'速攻アウトレット秒',  unit:'秒', lowerIsBetter:true,  group:'all', tePct:7, selfOnly:true }, // rank15: 査読基準値なし(1.5秒は努力目標)＝自己比較のみ
       { key:'gkPush_R',   name:'横プッシュオフ(右)', unit:'cm', lowerIsBetter:false, group:'gk' },
       { key:'gkPush_L',   name:'横プッシュオフ(左)', unit:'cm', lowerIsBetter:false, group:'gk' },
       { key:'gkSplit',    name:'開脚幅',            unit:'cm', lowerIsBetter:false, group:'gk' },
-      { key:'gkRecoverySec', name:'連続SV後の復帰秒',  unit:'秒', lowerIsBetter:true,  group:'gk' }, // rank38: GK連続セーブ後の基本姿勢復帰時間（本数固定）
+      { key:'gkRecoverySec', name:'連続SV後の復帰秒',  unit:'秒', lowerIsBetter:true,  group:'gk', tePct:7, selfOnly:true }, // rank38: 査読基準値なし＝自己比較のみ（本数固定）
       // gkReact は実コードのキー名（前稿 gk_react は誤記）。刺激オンセットの動画同期が難で標準化不可のため「参考」に降格【rank17】
       { key:'gkReact',    name:'反応(合図→セーブ)', unit:'秒', lowerIsBetter:true,  group:'gk', reference:true },
     ];
@@ -2409,7 +2412,9 @@
       { key:'shoeSize', name:'シューズサイズ', unit:'cm' },
     ];
     // 急伸フラグ: 直近6か月で身長がこの cm 以上伸びたら、成長期の高衝撃-30%運用の客観化として警告（臨床診断ではない・調整可）【rank12】
-    const GROWTH_SPURT_CM_6MO = 3.0;
+    const GROWTH_SPURT_CM_6MO = 3.0;        // 注意（早期気づき・安全側）
+    const GROWTH_SPURT_CM_6MO_HIGH = 3.6;   // 要配慮（=7.2cm/年。文献の傷害リスク閾値・高衝撃-30%の客観トリガー）【リサーチ】
+    const LOAD_SPIKE_PCT = 30;              // E: 週sRPE 前週比+30%超で急増警告【rank7】
     // A: 測定の位置づけ（基準・中間・最終の3点が主役、それ以外の4週点は参考）
     const PHYS_ROUND_LABEL = { baseline: '基準', midterm: '中間', final: '最終' };
 
@@ -3808,12 +3813,14 @@
       const deltaCm = Math.round((latest.val - from.val) * 10) / 10;
       const months = monthsBetween(from.date, latest.date);
       const per6 = months > 0 ? deltaCm / months * 6 : 0;
+      const flag = months >= 2 && per6 >= GROWTH_SPURT_CM_6MO;
       return {
         deltaCm, fromDate: from.date, toDate: latest.date,
         months: Math.round(months * 10) / 10,
         per6: Math.round(per6 * 10) / 10,
         enough: months >= 2,
-        flag: months >= 2 && per6 >= GROWTH_SPURT_CM_6MO
+        flag,
+        level: !flag ? null : (per6 >= GROWTH_SPURT_CM_6MO_HIGH ? 'high' : 'watch') // 二段化: high=要配慮 / watch=注意
       };
     }
 
@@ -3872,10 +3879,12 @@
         <>
           <div className="section-h">💪 フィジカル測定</div>
           {gs && gs.flag && (
-            <div className="card" style={{borderLeft:'3px solid #f5a900', marginBottom:12}}>
-              <div className="card-title" style={{color:'#f5a900'}}>📈 急伸期の可能性</div>
+            <div className="card" style={{borderLeft:'3px solid ' + (gs.level === 'high' ? '#ff6b6b' : '#f5a900'), marginBottom:12}}>
+              <div className="card-title" style={{color: gs.level === 'high' ? '#ff6b6b' : '#f5a900'}}>
+                📈 急伸期の可能性（{gs.level === 'high' ? '要配慮' : '注意'}）
+              </div>
               <div className="card-subtitle">
-                直近{gs.months}か月で身長 <b>+{gs.deltaCm}cm</b>（6か月換算 約{gs.per6}cm）。<br/>
+                直近{gs.months}か月で身長 <b>+{gs.deltaCm}cm</b>（6か月換算 約{gs.per6}cm{gs.level === 'high' ? '＝年7cm超ペース' : ''}）。<br/>
                 成長期は腱・骨に負担が出やすい時期。<b>高衝撃メニューは控えめ（-30%目安）</b>にして、痛みが出たら無理しない。<br/>
                 <span className="text-muted">※自動の目安フラグで診断ではありません。気になる痛みは顧問・大人に相談。</span>
               </div>
@@ -4005,7 +4014,7 @@
       const gkItems = items.filter(it => it.group === 'gk');
       const renderItem = (it) => (
         <div key={it.key} className="form-group">
-          <label>{it.name}（{it.unit}）{it.reference ? ' ・参考' : (it.lowerIsBetter === undefined ? '' : (it.lowerIsBetter ? ' ↓速い/小さいほど良い' : ' ↑大きいほど良い'))}</label>
+          <label>{it.name}（{it.unit}）{it.reference ? ' ・参考' : (it.lowerIsBetter === undefined ? '' : (it.lowerIsBetter ? ' ↓速い/小さいほど良い' : ' ↑大きいほど良い'))}{it.selfOnly ? ' ・基準値なし(自己比較)' : ''}</label>
           <input
             type="number" inputMode="decimal" step="any"
             value={vals[it.key] === undefined ? '' : vals[it.key]}
@@ -4306,6 +4315,11 @@
       const week = weekDates();
       const weekLogs = logs.filter(l => week.includes(l.date));
       const srpe = weekLogs.reduce((s,l) => s + (Number(l.rpe)||0) * (Number(l.minutes)||0), 0);
+      // 先週比%（前週 月〜日 の合計と比較）。週の急増(+LOAD_SPIKE_PCT%超)は故障リスクの目安。前週0は判定不能(null)
+      const prevAnchor = dateStr(new Date(new Date(today + 'T00:00:00').getTime() - 7 * 864e5));
+      const prevWeekLogs = logs.filter(l => weekDates(prevAnchor).includes(l.date));
+      const prevSrpe = prevWeekLogs.reduce((s,l) => s + (Number(l.rpe)||0) * (Number(l.minutes)||0), 0);
+      const loadDeltaPct = prevSrpe > 0 ? Math.round((srpe - prevSrpe) / prevSrpe * 100) : null;
       const dow = ['月','火','水','木','金','土','日'];
       return (
         <>
@@ -4324,6 +4338,12 @@
             </div>
             <button className="btn mt-16" onClick={save}>{todays ? '今日の負荷を更新' : '今日の負荷を記録'}</button>
             <div className="stat-row mt-16"><span className="label">今週の合計 sRPE</span><span className="value">{srpe} <span className="text-small text-muted">AU</span></span></div>
+            {loadDeltaPct !== null && (
+              <div className="stat-row"><span className="label">先週比</span>
+                <span className="value" style={loadDeltaPct > LOAD_SPIKE_PCT ? {color:'#f5a900'} : null}>
+                  {loadDeltaPct > 0 ? '+' : ''}{loadDeltaPct}%{loadDeltaPct > LOAD_SPIKE_PCT ? ' ⚠急増注意' : ''}
+                </span></div>
+            )}
             <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:4, marginTop:10}}>
               {week.map((d,i) => {
                 const l = weekLogs.find(x => x.date === d);

@@ -1,0 +1,5 @@
+# 別リポジトリ（試合記録PWA handball-analyzer）。git add -A で本体へ巻き込まないよう除外
+handball-analyzer/
+
+# 依存・一時生成物
+node_modules/
