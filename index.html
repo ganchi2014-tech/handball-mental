@@ -596,6 +596,8 @@
         selfChecks: [],
         sessionWorks: {},
         nightLogs: [],
+        preventionChecks: [], // C: 今日の予防チェック [{id,date,nhe,copenhagen,balance,nheReps?}]
+        loadLogs: [],         // E: 練習負荷RPE申告 [{id,date,rpe,minutes}]
         localUpdatedAt: 0
       };
     }
@@ -773,6 +775,11 @@
         if (!fbDB || !targetUid || !recId) return;
         return fbDB.ref('physicals/' + targetUid + '/' + recId).remove();
       },
+      // F: 退部・卒業時に対象選手の physicals/{uid} ノードを丸ごと削除（本人/coaches/staff のみ・ルールでゲート）
+      delAllPhysicals: async (targetUid) => {
+        if (!fbDB || !targetUid) return;
+        return fbDB.ref('physicals/' + targetUid).remove();
+      },
       subscribePhysicals: (targetUid, callback) => {
         if (!fbDB || !targetUid) return () => {};
         const ref = fbDB.ref('physicals/' + targetUid);
@@ -868,6 +875,24 @@
     // ローカル日付（JST）。toISOString はUTCのため朝9時前に前日となるバグがあった
     const dateStr = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     const todayStr = () => dateStr(new Date());
+    // 指定日（既定=今日）を含む週の [月..日] 7日分の日付文字列。週次集計（予防実施率・週sRPE）で使う
+    const weekDates = (d) => {
+      const base = (d instanceof Date) ? new Date(d) : new Date((d || todayStr()) + 'T00:00:00');
+      const dow = (base.getDay() + 6) % 7; // 月=0 .. 日=6
+      const monday = new Date(base);
+      monday.setDate(base.getDate() - dow);
+      return Array.from({ length: 7 }, (_, i) => {
+        const dt = new Date(monday);
+        dt.setDate(monday.getDate() + i);
+        return dateStr(dt);
+      });
+    };
+    // 2つの日付文字列(YYYY-MM-DD)の間の概算月数（急伸フラグの伸び率換算に使用）
+    const monthsBetween = (a, b) => {
+      if (!a || !b) return 0;
+      const ms = new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00');
+      return ms / (1000 * 60 * 60 * 24 * 30.44);
+    };
     const fmtDate = (s) => {
       if (!s) return '';
       const [y,m,d] = s.split('-');
@@ -1207,7 +1232,7 @@
               <Monthly state={state} update={update} showToast={showToast} />
             )}
             {view === 'stats' && !state.user.isCoach && (
-              <MyStats state={state} myGameStats={myGameStats} myPhysicals={myPhysicals} authUid={authUid} onNav={setView} onWriteReflection={openReflection} showToast={showToast} />
+              <MyStats state={state} myGameStats={myGameStats} myPhysicals={myPhysicals} authUid={authUid} onNav={setView} onWriteReflection={openReflection} showToast={showToast} update={update} />
             )}
             {view === 'physadmin' && state.user.isCoach && isApprovedCoach && (
               <PhysicalAdmin
@@ -2347,7 +2372,14 @@
     const scRoundLabel = (r) => ({baseline:'1回目(6月)', midterm:'中間(1月)', final:'最終(6月)'}[r] || r);
 
     // ====== フィジカル測定 種目定義（全員 + GK専用） ======
-    // lowerIsBetter: true=小さいほど良い（タイム系） / false=大きいほど良い（距離・回数・保持秒）
+    // lowerIsBetter: true=小さいほど良い（タイム系） / false=大きいほど良い（距離・回数・保持秒・率・点）
+    // group: 'all'=全員 / 'gk'=GK限定（physItemsFor が myIsGK で出し分け）
+    // reference:true = 参考扱い（標準化が難しく主指標から降格。入力は可能だが成長グラフでは控えめに表示）
+    // tePct = この種目の測定誤差帯(typical error)を % で個別指定（未指定は PHYS_TE_PCT_DEFAULT）
+    //
+    // 測定誤差帯（A: 基準比%表示で「±この範囲は横ばい＝誤差内」とみなすグレー帯）の既定値[%]。
+    // 4週ごとの1区間差は typical error に埋もれるため、暫定の汎用値。種目別の実測 TE が出たら tePct で上書き。
+    const PHYS_TE_PCT_DEFAULT = 5;
     const PHYS_ITEMS = [
       { key:'sprint10m',  name:'10m走',            unit:'秒',  lowerIsBetter:true,  group:'all' },
       { key:'cod505_R',   name:'505切り返し(右)',  unit:'秒',  lowerIsBetter:true,  group:'all' },
@@ -2357,13 +2389,29 @@
       { key:'shuttleRun', name:'20mシャトルラン',   unit:'回', lowerIsBetter:false, group:'all' },
       { key:'balance_R',  name:'片脚閉眼(右)',      unit:'秒', lowerIsBetter:false, group:'all' },
       { key:'balance_L',  name:'片脚閉眼(左)',      unit:'秒', lowerIsBetter:false, group:'all' },
+      // ↓ 再検証(2026-06-18)で計画に明記した新指標。キーは既存に合わせ camelCase。
+      { key:'brakeScore',         name:'制動スコア(減速)',   unit:'点', lowerIsBetter:false, group:'all' }, // rank2: 制動到達距離・現場ルーブリック（減速＝看板能力）。点=ルーブリック評点
+      { key:'reactAccPct',        name:'反応 初動正答率',     unit:'%',  lowerIsBetter:false, group:'all' }, // rank13/17: CP反応 R2/R3 初動正答%
+      { key:'fastbreakFinishPct', name:'速攻フィニッシュ率',  unit:'%',  lowerIsBetter:false, group:'all' }, // rank13: 連続速攻6本のシュート到達率
+      { key:'fastbreakOutletSec', name:'速攻アウトレット秒',  unit:'秒', lowerIsBetter:true,  group:'all' }, // rank15: GKセーブ→第1波ウイング着球の秒数
       { key:'gkPush_R',   name:'横プッシュオフ(右)', unit:'cm', lowerIsBetter:false, group:'gk' },
       { key:'gkPush_L',   name:'横プッシュオフ(左)', unit:'cm', lowerIsBetter:false, group:'gk' },
       { key:'gkSplit',    name:'開脚幅',            unit:'cm', lowerIsBetter:false, group:'gk' },
-      { key:'gkReact',    name:'反応(合図からセーブ)', unit:'秒', lowerIsBetter:true,  group:'gk' },
+      { key:'gkRecoverySec', name:'連続SV後の復帰秒',  unit:'秒', lowerIsBetter:true,  group:'gk' }, // rank38: GK連続セーブ後の基本姿勢復帰時間（本数固定）
+      // gkReact は実コードのキー名（前稿 gk_react は誤記）。刺激オンセットの動画同期が難で標準化不可のため「参考」に降格【rank17】
+      { key:'gkReact',    name:'反応(合図→セーブ)', unit:'秒', lowerIsBetter:true,  group:'gk', reference:true },
     ];
     // 対象選手がGKか否かで表示する種目を絞る
     const physItemsFor = (isGK) => PHYS_ITEMS.filter(it => it.group === 'all' || (isGK && it.group === 'gk'));
+    // D: 成長記録（パフォーマンス指標ではないので %グラフには出さず、急伸フラグの材料にする）。値は physicals の rec.items に同居
+    const GROWTH_ITEMS = [
+      { key:'heightCm', name:'身長',          unit:'cm' },
+      { key:'shoeSize', name:'シューズサイズ', unit:'cm' },
+    ];
+    // 急伸フラグ: 直近6か月で身長がこの cm 以上伸びたら、成長期の高衝撃-30%運用の客観化として警告（臨床診断ではない・調整可）【rank12】
+    const GROWTH_SPURT_CM_6MO = 3.0;
+    // A: 測定の位置づけ（基準・中間・最終の3点が主役、それ以外の4週点は参考）
+    const PHYS_ROUND_LABEL = { baseline: '基準', midterm: '中間', final: '最終' };
 
     function SelfCheckBars({ scores }) {
       return (
@@ -3700,10 +3748,10 @@
       return (v === '' || v === null || v === undefined || isNaN(Number(v))) ? null : Number(v);
     };
 
-    // 1種目の時系列（古→新）を取り出す。{date, val} の配列
+    // 1種目の時系列（古→新）を取り出す。{date, val, round} の配列（round は基準/中間/最終の強調に使う）
     function physSeries(records, key) {
       return (records || [])
-        .map(r => ({ date: r.date || '', val: physVal(r, key) }))
+        .map(r => ({ date: r.date || '', val: physVal(r, key), round: r.round || null }))
         .filter(p => p.val !== null)
         .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     }
@@ -3726,11 +3774,59 @@
       return { dir: improved ? 1 : -1, diff: raw };
     }
 
+    // A: 基準比%。baseline（基準タグ or 最古点）に対する最新値の変化を、改善が＋になる符号で返す。
+    // 4週ごとの前回比ではなく、基準からの累積変化を主役にする（前回比▼の下振れ表示で動機を削がないため）。
+    function physBaselinePct(series, lowerIsBetter) {
+      if (!series || series.length < 2) return null;
+      const basePoint = series.find(p => p.round === 'baseline') || series[0];
+      const base = basePoint.val;
+      const latest = series[series.length - 1].val;
+      if (!base) return null; // 0除算回避（率%系で基準=0のときは判定不能）
+      const rawPct = (latest - base) / Math.abs(base) * 100;
+      const signed = lowerIsBetter ? -rawPct : rawPct; // 改善を＋に
+      return { pct: signed, base, latest, baseDate: basePoint.date };
+    }
+    // 基準比が誤差帯の外か（1=改善 / -1=低下 / 0=横ばい＝誤差内 or 判定不能）
+    function physBaselineStatus(series, lowerIsBetter, tePct) {
+      const bp = physBaselinePct(series, lowerIsBetter);
+      const te = (tePct || PHYS_TE_PCT_DEFAULT);
+      if (!bp) return 0;
+      if (bp.pct > te) return 1;
+      if (bp.pct < -te) return -1;
+      return 0;
+    }
+    // D: 直近約6か月の身長の伸び。伸び率(6か月換算)が閾値超で急伸フラグ
+    function growthSpurt(records) {
+      const s = physSeries(records, 'heightCm');
+      if (s.length < 2) return null;
+      const latest = s[s.length - 1];
+      const cutoff = new Date(latest.date + 'T00:00:00');
+      cutoff.setMonth(cutoff.getMonth() - 6);
+      const cutoffStr = dateStr(cutoff);
+      const within = s.filter(p => p.date >= cutoffStr);
+      const from = (within.length >= 2 ? within[0] : s[0]);
+      const deltaCm = Math.round((latest.val - from.val) * 10) / 10;
+      const months = monthsBetween(from.date, latest.date);
+      const per6 = months > 0 ? deltaCm / months * 6 : 0;
+      return {
+        deltaCm, fromDate: from.date, toDate: latest.date,
+        months: Math.round(months * 10) / 10,
+        per6: Math.round(per6 * 10) / 10,
+        enough: months >= 2,
+        flag: months >= 2 && per6 >= GROWTH_SPURT_CM_6MO
+      };
+    }
+
     // 1種目の推移をインラインSVG折れ線で（GameDetailのSVG前例に倣う）
-    function PhysicalChart({ series, lowerIsBetter }) {
-      const W = 100, H = 36, padX = 4, padY = 5;
+    function PhysicalChart({ series, lowerIsBetter, tePct }) {
+      const W = 100, H = 40, padX = 4, padY = 6;
       if (!series.length) return null;
-      const vals = series.map(p => p.val);
+      const te = (tePct || PHYS_TE_PCT_DEFAULT) / 100;
+      // 基準点（基準タグ or 最古点）と、その ±te% の誤差帯
+      const basePoint = series.find(p => p.round === 'baseline') || series[0];
+      const base = basePoint.val;
+      const bandLo = base * (1 - te), bandHi = base * (1 + te);
+      const vals = series.map(p => p.val).concat([bandLo, bandHi, base]); // 帯も描画域に含める
       let min = Math.min(...vals), max = Math.max(...vals);
       if (min === max) { min -= 1; max += 1; } // 1点 or 全部同値でも描けるように
       const x = (i) => series.length === 1 ? W / 2 : padX + (i / (series.length - 1)) * (W - padX * 2);
@@ -3741,18 +3837,27 @@
         return padY + (1 - up) * (H - padY * 2);
       };
       const pts = series.map((p, i) => `${x(i)},${y(p.val)}`).join(' ');
-      const lastImproved = (() => {
-        const t = physTrend(series, lowerIsBetter);
-        return t.dir;
-      })();
-      const lineColor = lastImproved === 1 ? 'var(--success)' : (lastImproved === -1 ? '#f5a900' : 'var(--primary)');
+      // 線色は「基準比」が誤差帯の外かで決める（前回比▼で色を変えない＝動機を削がない）
+      const st = physBaselineStatus(series, lowerIsBetter, tePct);
+      const lineColor = st === 1 ? 'var(--success)' : (st === -1 ? '#f5a900' : 'var(--primary)');
+      const yA = y(bandLo), yB = y(bandHi);
+      const bandTop = Math.min(yA, yB), bandH = Math.max(0.8, Math.abs(yA - yB));
+      const isKey3 = (p) => p.round === 'baseline' || p.round === 'midterm' || p.round === 'final';
       return (
-        <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%', height:48, background:'rgba(255,255,255,0.04)', borderRadius:8}}>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%', height:52, background:'rgba(255,255,255,0.04)', borderRadius:8}}>
+          {/* 誤差帯（±te%・グレー）: この範囲の上下動は測定誤差内＝横ばい扱い */}
+          <rect x="0" y={bandTop} width={W} height={bandH} fill="rgba(255,255,255,0.10)" />
+          <line x1="0" y1={y(base)} x2={W} y2={y(base)} stroke="rgba(255,255,255,0.30)" strokeWidth="0.5" strokeDasharray="2 2" />
           {series.length > 1 && <polyline points={pts} fill="none" stroke={lineColor} strokeWidth="1" strokeLinejoin="round" strokeLinecap="round" />}
-          {series.map((p, i) => (
-            <circle key={i} cx={x(i)} cy={y(p.val)} r={i === series.length - 1 ? 2 : 1.4}
-              fill={i === series.length - 1 ? lineColor : 'rgba(255,255,255,0.6)'} />
-          ))}
+          {series.map((p, i) => {
+            const last = i === series.length - 1;
+            const key3 = isKey3(p);
+            return (
+              <circle key={i} cx={x(i)} cy={y(p.val)}
+                r={key3 ? 2.4 : (last ? 1.8 : 1.0)}
+                fill={last ? lineColor : (key3 ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.40)')} />
+            );
+          })}
         </svg>
       );
     }
@@ -3762,9 +3867,20 @@
       const items = physItemsFor(isGK);
       const recs = records || [];
       const measuredItems = items.filter(it => physSeries(recs, it.key).length > 0);
+      const gs = growthSpurt(recs); // D: 急伸フラグ（身長の伸びから）
       return (
         <>
           <div className="section-h">💪 フィジカル測定</div>
+          {gs && gs.flag && (
+            <div className="card" style={{borderLeft:'3px solid #f5a900', marginBottom:12}}>
+              <div className="card-title" style={{color:'#f5a900'}}>📈 急伸期の可能性</div>
+              <div className="card-subtitle">
+                直近{gs.months}か月で身長 <b>+{gs.deltaCm}cm</b>（6か月換算 約{gs.per6}cm）。<br/>
+                成長期は腱・骨に負担が出やすい時期。<b>高衝撃メニューは控えめ（-30%目安）</b>にして、痛みが出たら無理しない。<br/>
+                <span className="text-muted">※自動の目安フラグで診断ではありません。気になる痛みは顧問・大人に相談。</span>
+              </div>
+            </div>
+          )}
           {canEdit && (
             <button className="btn mb-16" onClick={onAddClick}>+ フィジカルを記録する</button>
           )}
@@ -3779,34 +3895,49 @@
           ) : measuredItems.length === 0 ? (
             <div className="card"><div className="card-subtitle">記録はありますが、まだ数値の入った種目がありません。</div></div>
           ) : (
+            <>
+            <div className="text-small text-muted mb-16" style={{lineHeight:1.6}}>
+              数字は <b>基準（最初の測定）からの変化%</b>。グレーの帯は測定誤差の目安（±{PHYS_TE_PCT_DEFAULT}%）で、<b>帯の中の上下は「横ばい」</b>＝気にしない。主役は基準・中間・最終の3点、4週ごとの点は参考。
+            </div>
             <div className="phys-grid" style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
-              {measuredItems.map(it => {
+              {measuredItems.slice().sort((a,b) => (a.reference?1:0) - (b.reference?1:0)).map(it => {
                 const series = physSeries(recs, it.key);
                 const latest = series[series.length - 1];
                 const best = physBest(series, it.lowerIsBetter);
-                const trend = physTrend(series, it.lowerIsBetter);
+                const te = it.tePct || PHYS_TE_PCT_DEFAULT;
+                const bp = physBaselinePct(series, it.lowerIsBetter);
                 const isBest = best !== null && latest.val === best;
-                const arrow = trend.dir === 1 ? '▲' : (trend.dir === -1 ? '▼' : '–');
-                const arrowColor = trend.dir === 1 ? 'var(--success)' : (trend.dir === -1 ? '#f5a900' : 'var(--text-3)');
+                // A: 基準比%チップ（誤差帯内は「誤差内」、外なら符号付き%）。reference種目（gkReact）はチップを出さない
+                let chip = null;
+                if (!it.reference && bp) {
+                  const within = Math.abs(bp.pct) <= te;
+                  const col = within ? 'var(--text-3)' : (bp.pct > 0 ? 'var(--success)' : '#f5a900');
+                  const txt = within ? '誤差内' : (bp.pct > 0 ? '+' : '') + bp.pct.toFixed(0) + '%';
+                  chip = <span style={{marginLeft:'auto', color:col, fontWeight:700, fontSize:12}}
+                    title={`基準(${bp.baseDate}) ${bp.base}${it.unit} → 最新 ${bp.latest}${it.unit}`}>基準比 {txt}</span>;
+                }
                 return (
-                  <div key={it.key} className="card" style={{padding:12}}>
-                    <div className="card-title" style={{fontSize:13}}>{it.name}</div>
+                  <div key={it.key} className="card" style={{padding:12, opacity: it.reference ? 0.72 : 1}}>
+                    <div className="card-title" style={{fontSize:13}}>
+                      {it.name}{it.reference && <span className="text-small text-muted" style={{marginLeft:6, fontWeight:400}}>参考</span>}
+                    </div>
                     <div style={{display:'flex', alignItems:'baseline', gap:6, marginTop:4}}>
                       <span style={{fontSize:22, fontWeight:800}}>{latest.val}</span>
                       <span className="text-small text-muted">{it.unit}</span>
-                      <span style={{marginLeft:'auto', color:arrowColor, fontWeight:700, fontSize:13}}>
-                        {arrow}{trend.dir !== 0 ? Math.abs(trend.diff) : ''}
-                      </span>
+                      {chip}
                     </div>
                     <div className="text-small text-muted" style={{marginTop:2}}>
                       自己ベスト {best}{it.unit}{isBest && <span style={{color:'var(--success)', marginLeft:6}}>★更新</span>}
                     </div>
-                    <PhysicalChart series={series} lowerIsBetter={it.lowerIsBetter} />
-                    <div className="text-small text-muted" style={{marginTop:2}}>{latest.date}</div>
+                    <PhysicalChart series={series} lowerIsBetter={it.lowerIsBetter} tePct={te} />
+                    <div className="text-small text-muted" style={{marginTop:2}}>
+                      {latest.date}{latest.round && PHYS_ROUND_LABEL[latest.round] ? ` ・${PHYS_ROUND_LABEL[latest.round]}` : ''}
+                    </div>
                   </div>
                 );
               })}
             </div>
+            </>
           )}
           {recs.length > 0 && (
             <>
@@ -3838,14 +3969,16 @@
     // フィジカル入力モーダル（SelfCheckEditor を雛形に）
     function PhysicalEditor({ isGK, byRole, authUid, targetName, onSave, onCancel }) {
       const items = physItemsFor(isGK);
+      const inputItems = [...items, ...GROWTH_ITEMS]; // D: 身長・シューズも同じ rec.items に収める
       const [date, setDate] = useState(todayStr());
+      const [round, setRound] = useState(''); // A: ''=通常(4週点・参考) / baseline / midterm / final
       const [vals, setVals] = useState({}); // {key: string}
       const [memo, setMemo] = useState('');
       const setVal = (key, v) => setVals(prev => ({ ...prev, [key]: v }));
 
       const submit = () => {
         const itemsObj = {};
-        items.forEach(it => {
+        inputItems.forEach(it => {
           const raw = vals[it.key];
           if (raw === '' || raw === undefined || raw === null) return; // 空欄は未測定として除外
           const n = Number(raw);
@@ -3862,6 +3995,7 @@
           byRole: byRole || 'self',
           createdAt: Date.now()
         };
+        if (round) rec.round = round; // A: 基準/中間/最終 のときだけ付与（通常=未付与）
         if (memo.trim()) rec.memo = memo.trim();
         onSave(rec);
       };
@@ -3871,7 +4005,7 @@
       const gkItems = items.filter(it => it.group === 'gk');
       const renderItem = (it) => (
         <div key={it.key} className="form-group">
-          <label>{it.name}（{it.unit}）{it.lowerIsBetter ? ' ↓速い/小さいほど良い' : ' ↑大きいほど良い'}</label>
+          <label>{it.name}（{it.unit}）{it.reference ? ' ・参考' : (it.lowerIsBetter === undefined ? '' : (it.lowerIsBetter ? ' ↓速い/小さいほど良い' : ' ↑大きいほど良い'))}</label>
           <input
             type="number" inputMode="decimal" step="any"
             value={vals[it.key] === undefined ? '' : vals[it.key]}
@@ -3895,6 +4029,14 @@
               <label>測定日</label>
               <input type="date" value={date} onChange={e => setDate(e.target.value)} />
             </div>
+            <div className="form-group">
+              <label>測定の位置づけ（任意・成長グラフの主役は基準/中間/最終の3点）</label>
+              <div className="chip-group" style={{flexWrap:'wrap'}}>
+                {[['','通常(4週点)'],['baseline','基準'],['midterm','中間'],['final','最終']].map(([v,lab]) => (
+                  <div key={v} className={'chip ' + (round === v ? 'selected' : '')} onClick={() => setRound(v)}>{lab}</div>
+                ))}
+              </div>
+            </div>
             {allItems.map(renderItem)}
             {gkItems.length > 0 && (
               <>
@@ -3902,6 +4044,9 @@
                 {gkItems.map(renderItem)}
               </>
             )}
+            <div className="section-h" style={{fontSize:14, marginTop:8}}>📈 成長記録（任意）</div>
+            <div className="text-small text-muted mb-16">身長の伸びが大きい時期は、高衝撃メニューを控える目安にします（急伸フラグ）。</div>
+            {GROWTH_ITEMS.map(renderItem)}
             <div className="form-group">
               <label>メモ（任意）</label>
               <input value={memo} onChange={e => setMemo(e.target.value)} placeholder="コンディション・測定条件など" />
@@ -3986,6 +4131,21 @@
                 onAddClick={() => setEditing(true)}
                 onDelete={del}
               />
+            )}
+            {targetUid && (
+              <div style={{marginTop:24, paddingTop:16, borderTop:'1px solid var(--border)'}}>
+                <div className="text-small text-muted mb-16">
+                  退部・卒業時の身体データ削除（未成年データの取り扱い）。physicals/{'{uid}'} を丸ごと消します。元に戻せません。
+                </div>
+                <button className="btn-ghost" style={{color:'#ff6b6b', borderColor:'#ff6b6b'}}
+                  onClick={async () => {
+                    if (!confirm(`${selected.displayName} の身体データ（全測定記録）をすべて削除します。\n退部・卒業時の処理です。元に戻せません。続けますか？`)) return;
+                    try { await storage.delAllPhysicals(targetUid); showToast('身体データを全削除しました'); }
+                    catch (e) { console.warn('[delAllPhysicals]', e); showToast('削除できませんでした（権限・ルールを確認）'); }
+                  }}>
+                  退部・卒業: 身体データを全削除
+                </button>
+              </div>
             )}
             {editing && targetUid && (
               <PhysicalEditor
@@ -4093,7 +4253,122 @@
     }
 
     // ====== My Stats (選手用: 自分のCSV取込済データを表示) ======
-    function MyStats({ state, myGameStats, myPhysicals, authUid, onNav, onWriteReflection, showToast }) {
+    // C: 予防チェック（今日の入力＋週次の予防実施率）【rank36】
+    function PreventionCard({ state, update }) {
+      const checks = state.preventionChecks || [];
+      const today = todayStr();
+      const todays = checks.find(c => c.date === today) || null;
+      const items = [['nhe','NHE(レップ)'], ['copenhagen','コペンハーゲン'], ['balance','バランス']];
+      const toggle = (key) => {
+        const base = todays || { id: uid(), date: today };
+        const next = { ...base, [key]: !base[key] };
+        update({ preventionChecks: [next, ...checks.filter(c => c.date !== today)] });
+      };
+      const week = weekDates();
+      const weekChecks = checks.filter(c => week.includes(c.date));
+      const daysDone = weekChecks.filter(c => c.nhe || c.copenhagen || c.balance).length;
+      const ratePct = Math.round(daysDone / 7 * 100);
+      return (
+        <>
+          <div className="section-h">🛡️ 今日の予防チェック</div>
+          <div className="card">
+            <div className="card-subtitle">けが予防は積み重ね。今日やったものをタップ。</div>
+            <div className="chip-group" style={{flexWrap:'wrap', marginTop:10}}>
+              {items.map(([k,lab]) => (
+                <div key={k} className={'chip ' + (todays && todays[k] ? 'selected' : '')} onClick={() => toggle(k)}>
+                  {todays && todays[k] ? '✓ ' : ''}{lab}
+                </div>
+              ))}
+            </div>
+            <div className="stat-row mt-16"><span className="label">今週の予防実施率</span><span className="value">{daysDone}/7 日（{ratePct}%）</span></div>
+            <div className="text-small text-muted" style={{marginTop:4}}>
+              {items.map(([k,lab]) => `${lab.replace('(レップ)','')} ${weekChecks.filter(c => c[k]).length}日`).join(' ・ ')}
+            </div>
+          </div>
+        </>
+      );
+    }
+
+    // E: 練習負荷RPE（毎日の申告＋週sRPE=Σ(RPE×分)を全7日集計）【rank7】
+    function LoadCard({ state, update, showToast }) {
+      const logs = state.loadLogs || [];
+      const today = todayStr();
+      const todays = logs.find(l => l.date === today) || null;
+      const [rpe, setRpe] = useState(todays ? String(todays.rpe) : '');
+      const [minutes, setMinutes] = useState(todays ? String(todays.minutes) : '');
+      const save = () => {
+        const r = Number(rpe), m = Number(minutes);
+        if (!r || !m || r <= 0 || m <= 0) { showToast && showToast('RPE(1〜10)と時間(分)を入れてください'); return; }
+        const rec = { id: todays ? todays.id : uid(), date: today, rpe: Math.min(10, Math.max(1, r)), minutes: m };
+        update({ loadLogs: [rec, ...logs.filter(l => l.date !== today)] });
+        showToast && showToast('記録しました');
+      };
+      const week = weekDates();
+      const weekLogs = logs.filter(l => week.includes(l.date));
+      const srpe = weekLogs.reduce((s,l) => s + (Number(l.rpe)||0) * (Number(l.minutes)||0), 0);
+      const dow = ['月','火','水','木','金','土','日'];
+      return (
+        <>
+          <div className="section-h">🔥 練習の負荷（RPE）</div>
+          <div className="card">
+            <div className="card-subtitle">水曜・土日も、練習した日は「キツさ(RPE 1〜10)」と「時間(分)」を入れる。1週間の負荷を見える化（全7日）。</div>
+            <div style={{display:'flex', gap:10, marginTop:10}}>
+              <div className="form-group" style={{flex:1, margin:0}}>
+                <label>キツさ RPE(1〜10)</label>
+                <input type="number" inputMode="numeric" min="1" max="10" step="1" value={rpe} onChange={e => setRpe(e.target.value)} placeholder="例 6" />
+              </div>
+              <div className="form-group" style={{flex:1, margin:0}}>
+                <label>時間(分)</label>
+                <input type="number" inputMode="numeric" min="0" step="5" value={minutes} onChange={e => setMinutes(e.target.value)} placeholder="例 90" />
+              </div>
+            </div>
+            <button className="btn mt-16" onClick={save}>{todays ? '今日の負荷を更新' : '今日の負荷を記録'}</button>
+            <div className="stat-row mt-16"><span className="label">今週の合計 sRPE</span><span className="value">{srpe} <span className="text-small text-muted">AU</span></span></div>
+            <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:4, marginTop:10}}>
+              {week.map((d,i) => {
+                const l = weekLogs.find(x => x.date === d);
+                const v = l ? (Number(l.rpe)||0) * (Number(l.minutes)||0) : 0;
+                return (
+                  <div key={d} style={{textAlign:'center'}}>
+                    <div className="text-small text-muted">{dow[i]}</div>
+                    <div className={v ? '' : 'text-muted'} style={{fontWeight:700, fontSize:12}}>{v || '–'}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="text-small text-muted" style={{marginTop:6}}>sRPE = RPE × 分。週合計が前週より急に増えすぎないように（+30%超は注意）。</div>
+          </div>
+        </>
+      );
+    }
+
+    // F: 身体データのクラウド保存への同意トグル【rank42】
+    function ConsentCard({ state, update, showToast }) {
+      const consented = !!(state.user && state.user.physConsent);
+      const at = (state.user && state.user.physConsentAt) || '';
+      const toggle = () => {
+        const now = !consented;
+        update({ user: { ...state.user, physConsent: now, physConsentAt: now ? todayStr() : null } });
+        showToast && showToast(now ? '同意を記録しました' : '同意を取り消しました');
+      };
+      return (
+        <>
+          <div className="section-h">🔒 身体データの取り扱い</div>
+          <div className="card">
+            <div className="card-subtitle" style={{lineHeight:1.7}}>
+              身長・測定値などの身体データをクラウドに保存することへの同意です。<br/>
+              見られるのは <b>あなた・顧問・マネージャーだけ</b>。他の選手には見えません。<br/>
+              退部・卒業のときは顧問に言えば、データをまとめて消せます。
+            </div>
+            <button className={'btn mt-16' + (consented ? ' btn-ghost' : '')} onClick={toggle}>
+              {consented ? `✓ 同意済み（${at}）— 取り消す` : '身体データのクラウド保存に同意する'}
+            </button>
+          </div>
+        </>
+      );
+    }
+
+    function MyStats({ state, myGameStats, myPhysicals, authUid, onNav, onWriteReflection, showToast, update }) {
       const [selectedGame, setSelectedGame] = useState(null);
       const [physEditing, setPhysEditing] = useState(false);
 
@@ -4153,6 +4428,11 @@
             onAddClick={() => setPhysEditing(true)}
             onDelete={delPhys}
           />
+
+          {/* C: 予防チェック / E: 練習負荷RPE / F: 同意（マイ統計に集約） */}
+          <PreventionCard state={state} update={update} />
+          <LoadCard state={state} update={update} showToast={showToast} />
+          <ConsentCard state={state} update={update} showToast={showToast} />
 
           <div className="section-h">マイ統計（試合データ）</div>
 
