@@ -794,6 +794,12 @@
         const ref = fbDB.ref('staff');
         const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
         return () => ref.off('value', handler);
+      },
+      // ----- LAB（自主練ラボ）: 本人の試合カード（/lab/{uid}/matchCards・本人のみread・一回読み） -----
+      getMyLabCards: async (uid) => {
+        if (!fbDB || !uid) return [];
+        const snap = await fbDB.ref('lab/' + uid + '/matchCards').get();
+        return Object.values(snap.val() || {});
       }
     };
 
@@ -4424,6 +4430,27 @@
         return map;
       }, [state.reflections]);
 
+      // LAB: 読み的中率（本人の /lab/{uid}/matchCards を一回読み。読取不可・0件なら非表示が正）
+      const [yomiStat, setYomiStat] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        if (!authUid) { setYomiStat(null); return; }
+        storage.getMyLabCards(authUid)
+          .then(cards => {
+            if (!alive) return;
+            let n = 0, h = 0;
+            cards.forEach(c => {
+              const ys = Array.isArray(c && c.yomi) ? c.yomi : Object.values((c && c.yomi) || {});
+              ys.forEach(y => {
+                if (y && (y.hit === true || y.hit === false)) { n++; if (y.hit === true) h++; }
+              });
+            });
+            setYomiStat(n > 0 ? { n, h, pct: Math.round(h / n * 100) } : null);
+          })
+          .catch(e => { console.debug('[lab yomi]', e); if (alive) setYomiStat(null); });
+        return () => { alive = false; };
+      }, [authUid]);
+
       if (selectedGame) {
         return <GameDetail game={selectedGame} reflection={reflectionsByDate[selectedGame.date]} onBack={() => setSelectedGame(null)} onWriteReflection={onWriteReflection} />;
       }
@@ -4453,6 +4480,17 @@
           <PreventionCard state={state} update={update} />
           <LoadCard state={state} update={update} showToast={showToast} />
           <ConsentCard state={state} update={update} showToast={showToast} />
+
+          {/* LAB: 読み的中率（データなし・読取不可なら非表示） */}
+          {yomiStat && (
+            <div className="card mb-16">
+              <div className="stat-row">
+                <span className="label">🔮 読み的中率</span>
+                <span className="value">{yomiStat.pct}%（的中{yomiStat.h}/丸付け{yomiStat.n}件）</span>
+              </div>
+              <div className="card-subtitle">LABの試合カードから</div>
+            </div>
+          )}
 
           <div className="section-h">マイ統計（試合データ）</div>
 
