@@ -62,6 +62,20 @@
     "matches": {
       ".read": "auth != null && root.child('coaches').child(auth.uid).exists()",
       ".write": "auth != null"
+    },
+
+    "lab": {
+      "$uid": {
+        ".read": "auth != null && $uid === auth.uid",
+        ".write": "auth != null && $uid === auth.uid"
+      }
+    },
+
+    "labShared": {
+      ".read": "auth != null",
+      "$id": {
+        ".write": "auth != null && ((!data.exists() && newData.exists() && newData.child('author').val() === auth.uid) || (data.exists() && data.child('author').val() === auth.uid && (!newData.exists() || newData.child('author').val() === auth.uid)))"
+      }
     }
   }
 }
