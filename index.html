@@ -827,6 +827,13 @@
         const labUid = await storage.resolveLabUid(uid);
         const snap = await fbDB.ref('lab/' + labUid + '/' + node).get();
         return Object.values(snap.val() || {});
+      },
+      // 本人の LAB 単一値ノード（loopState 等）を一回読み。読めなければ null
+      getMyLabSingleton: async (uid, node) => {
+        if (!fbDB || !uid) return null;
+        const labUid = await storage.resolveLabUid(uid);
+        const snap = await fbDB.ref('lab/' + labUid + '/' + node).get();
+        return snap.val() || null;
       }
     };
 
@@ -888,6 +895,19 @@
     // 旧APIを維持（既存呼び出しのため）
     storage.load = storage.loadCache;
     storage.save = storage.saveCache;
+
+    // ====== LAB 試合ループ位相（LAB lib/loop.js の loopPhaseInfo 互換） ======
+    // nextMatchあり: D-3以前=practice / D-2〜D-0=predict / 試合翌日〜+2=verify / +3以降=practice
+    function labLoopPhase(nextMatch, refDate) {
+      if (!nextMatch || !nextMatch.date) return { phase: 'practice', days: null };
+      const d = refDate || new Date();
+      const today = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      const diff = Math.round((new Date(nextMatch.date + 'T00:00:00') - today) / 86400000);
+      if (diff >= 3) return { phase: 'practice', days: diff };
+      if (diff >= 0) return { phase: 'predict', days: diff };
+      if (diff >= -2) return { phase: 'verify', days: diff };
+      return { phase: 'practice', days: null };
+    }
 
     // ====== Hash for PIN (simple, not cryptographic but ok for v1) ======
     function hashPin(pin) {
@@ -994,6 +1014,17 @@
         if (!authUid) { setMyCoachNotes({}); return; }
         const unsub = storage.subscribeMyCoachNotes(authUid, setMyCoachNotes);
         return unsub;
+      }, [authUid]);
+
+      // ── LAB のループ状態（次の試合日）を一回読み — ホームの位相カード用（読めなければ非表示が正）
+      const [labLoop, setLabLoop] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        if (!authUid) { setLabLoop(null); return; }
+        storage.getMyLabSingleton(authUid, 'loopState')
+          .then(v => { if (alive) setLabLoop(v); })
+          .catch(e => { console.debug('[lab loop]', e); if (alive) setLabLoop(null); });
+        return () => { alive = false; };
       }, [authUid]);
 
       // ── クラウド試合購読（顧問のみ）
@@ -1241,7 +1272,7 @@
             team={team}
           />
           <div className="content">
-            {view === 'home' && <Home state={state} onNav={setView} team={team} update={update} myCoachNotes={myCoachNotes} myGameStats={myGameStats} onWriteReflection={openReflection} showToast={showToast} />}
+            {view === 'home' && <Home state={state} onNav={setView} team={team} update={update} myCoachNotes={myCoachNotes} myGameStats={myGameStats} onWriteReflection={openReflection} showToast={showToast} labLoop={labLoop} />}
             {view === 'breath' && <BreathingGuide state={state} update={update} showToast={showToast} />}
             {view === 'pregame' && <PreGame state={state} team={team} update={update} showToast={showToast} onNav={setView} />}
             {view === 'ayumi' && <Ayumi state={state} myGameStats={myGameStats} />}
@@ -1829,7 +1860,7 @@
     }
 
     // ====== Home ======
-    function Home({ state, onNav, team, update, myCoachNotes, myGameStats, onWriteReflection, showToast }) {
+    function Home({ state, onNav, team, update, myCoachNotes, myGameStats, onWriteReflection, showToast, labLoop }) {
       const today = new Date();
       const hour = today.getHours();
       const greeting = hour < 11 ? 'おはよう' : hour < 18 ? 'こんにちは' : 'お疲れ様';
@@ -1841,6 +1872,37 @@
         <>
           <h2 className="greeting">{greeting}、{state.user.name}</h2>
           <p className="greeting-sub">{today.getMonth()+1}月{today.getDate()}日 ({['日','月','火','水','木','金','土'][today.getDay()]})</p>
+
+          {/* LAB試合ループ位相カード（LABで次の試合日を設定した選手のみ・平常時は非表示） */}
+          {labLoop && (() => {
+            const info = labLoopPhase(labLoop.nextMatch);
+            if (info.phase === 'predict') {
+              const opp = labLoop.nextMatch.opponent ? ` vs ${labLoop.nextMatch.opponent}` : '';
+              return (
+                <div className="card" style={{borderLeft:'3px solid var(--primary)', cursor:'pointer'}} onClick={() => onNav('pregame')}>
+                  <div className="card-title">🏟 {info.days === 0 ? '今日は試合！' : `試合まであと${info.days}日`}{opp}</div>
+                  <div className="card-subtitle">
+                    {info.days === 0
+                      ? 'アップ前の3分 — 試合前モードへ（タップ）'
+                      : 'IZOFで自分のゾーンを確認して、試合前モードの流れを見ておこう（タップ）'}
+                  </div>
+                </div>
+              );
+            }
+            if (info.phase === 'verify') {
+              const gameDate = labLoop.nextMatch.date;
+              const hasRef = (state.reflections || []).some(r => r.gameDate === gameDate);
+              if (hasRef) return null;
+              return (
+                <div className="card" style={{borderLeft:'3px solid var(--accent)', cursor:'pointer'}}
+                  onClick={() => onWriteReflection({ gameDate, opponent: labLoop.nextMatch.opponent || '' })}>
+                  <div className="card-title">📝 試合おつかれさま</div>
+                  <div className="card-subtitle">気持ちが新しいうちに振り返りを書こう（タップ）。LABの読みの丸付けもお忘れなく</div>
+                </div>
+              );
+            }
+            return null;
+          })()}
 
           {activeDecl && update && (() => {
             const ds = todayStr();
