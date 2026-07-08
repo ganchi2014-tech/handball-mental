@@ -6,6 +6,25 @@
 
 ---
 
+> ## ⚠ 実装ノート（2026-07-08 追記・最初に読む）
+>
+> 本書は当初設計であり、実装は以下の点で本書と**意図的に**異なる。読む際はこの差分を前提にすること。
+>
+> 1. **DBは Firestore ではなく Realtime Database（RTDB）**。§3 のコレクション設計・セキュリティルールは
+>    当初案の記録として残すが、**現行の正本は `database.rules.json`**（このリポジトリ直下）。
+>    実ノード: `users/{uid}/{state|gameStats|coachNotes|consultAck}` / `coaches` / `staff` /
+>    `physicals/{uid}` / `team` / `roster` / `rosterToUid` / `matches` / `lab/{uid}` / `labShared` / `labLinks`。
+> 2. **独立アプリとして構築**（§5-1 の方針転換どおり）。handball-system（LAB）とは Firebase プロジェクト
+>    `handball-mental` を共有し、`/lab`・`/labShared`・`/labLinks`（UIDブリッジ）で連携する。
+>    連携設計は `docs/superpowers/specs/2026-07-08-lab-bridge-design.md` を参照。
+> 3. **名簿は「学年固定」でなく `enrollmentYear`（入学年）から学年を動的計算**。引退は削除でなく
+>    `active=false`（引退フラグ）。設計は `docs/superpowers/specs/2026-07-08-retirement-roster-design.md`。
+> 4. **PIN は v2 形式（SHA-256＋端末ランダムsalt・ローカル保存のみ）**。§4-1 の記述より強化済み。
+>    旧v1形式の端末はログイン成功時に自動移行。
+> 5. セットアップの正は `FIREBASE_SETUP.md`（RTDB前提で訂正済み）。
+
+---
+
 # 1. システム概要
 
 ## 1-1 全体構成
@@ -150,7 +169,7 @@ handball-system の既存ナビに「**メンタル**」タブを追加。中身
 
 ---
 
-# 3. データモデル（Firestore）
+# 3. データモデル（Firestore）〔当初案・未採用。現行は RTDB — 冒頭の実装ノート参照〕
 
 ## 3-1 コレクション設計
 

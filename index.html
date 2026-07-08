@@ -909,7 +909,8 @@
       return { phase: 'practice', days: null };
     }
 
-    // ====== Hash for PIN (simple, not cryptographic but ok for v1) ======
+    // ====== Hash for PIN ======
+    // 旧v1形式（弱い文字列ハッシュ）。既存端末の保存値の検証と移行のためだけに残す。新規保存には使わない
     function hashPin(pin) {
       let h = 0;
       const s = String(pin) + '|handball-mental|salt';
@@ -918,6 +919,29 @@
         h |= 0;
       }
       return String(h);
+    }
+    // v2: SHA-256＋端末ごとランダムsalt（形式 'v2:salt:hex'）。
+    // 4桁PINは総当たり空間が小さく、これは端末の補助錠（localStorageを見た他人がPINを即座に逆算できないようにする）
+    async function hashPinV2(pin, salt) {
+      let s = salt;
+      if (!s) {
+        const a = new Uint8Array(16);
+        crypto.getRandomValues(a);
+        s = Array.from(a).map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+      const data = new TextEncoder().encode(s + '|' + String(pin) + '|handball-mental');
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+      return 'v2:' + s + ':' + hex;
+    }
+    // 保存形式（v1/v2）を自動判別して検証
+    async function verifyPin(pin, stored) {
+      if (!stored) return false;
+      if (stored.indexOf('v2:') === 0) {
+        const salt = stored.split(':')[1];
+        return (await hashPinV2(pin, salt)) === stored;
+      }
+      return hashPin(pin) === stored; // 旧v1形式
     }
 
     // ====== Helpers ======
@@ -1388,7 +1412,7 @@
           if (!confirm('「' + (selectedEntry.fullName || selectedEntry.surname) + '」は既に別の端末で登録されています。\n\n自分の機種変更・再登録なら「OK」（この端末が新しい本人の端末になります。以前の記録は顧問に相談）。\n他人の枠なら「キャンセル」してください。')) return;
         }
         setBusy(true);
-        const hash = hashPin(pin);
+        const hash = await hashPinV2(pin);
         const displayName = selectedEntry.fullName || selectedEntry.surname;
         localStorage.setItem(PIN_KEY, hash);
         localStorage.setItem(NAME_KEY, displayName);
@@ -1410,7 +1434,7 @@
         if (!coachName) { alert('顧問名を入力してください'); return; }
         if (!pin || pin.length !== 4) { alert('4桁PINを入力してください'); return; }
         setBusy(true);
-        const hash = hashPin(pin);
+        const hash = await hashPinV2(pin);
         localStorage.setItem(PIN_KEY, hash);
         localStorage.setItem(NAME_KEY, coachName);
         const user = {
@@ -1426,9 +1450,18 @@
       };
 
       const handleLogin = async () => {
-        if (hashPin(pin) !== savedPin) {
+        const ok = await verifyPin(pin, savedPin);
+        if (!ok) {
           alert('PINが違います');
           return;
+        }
+        // 旧v1形式で保存されていた端末は、ログイン成功時に v2 形式へ無停止移行
+        if (savedPin.indexOf('v2:') !== 0) {
+          try {
+            const nh = await hashPinV2(pin);
+            localStorage.setItem(PIN_KEY, nh);
+            setSavedPin(nh);
+          } catch (e) { /* 移行失敗しても旧形式のまま動作継続 */ }
         }
         setBusy(true);
         const saved = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
@@ -3355,12 +3388,14 @@
       };
       return (
         <>
-          <div className="section-h">顧問の承認が必要です</div>
+          <div className="section-h">管理者の承認が必要です</div>
           <div className="card">
             <div className="card-title">🔒 まだ承認されていません</div>
             <div className="card-subtitle" style={{lineHeight:1.7}}>
               選手の個人データ（メンタル記録・試合統計）は、承認された顧問だけが見られます。<br/>
-              下のあなたのIDを Firebase Console の <code>coaches</code> に登録すると、顧問画面が使えるようになります。
+              下のあなたのIDを、管理者が Firebase Console の<strong>役割に応じたリスト</strong>に登録すると使えるようになります：<br/>
+              ・<strong>顧問・コーチ</strong> → <code>coaches</code>（選手のメンタル記録・試合統計・名簿管理まで見られます）<br/>
+              ・<strong>マネージャー</strong> → <code>staff</code>（フィジカル入力だけ。メンタル記録には触れられません）
             </div>
           </div>
 
@@ -3381,7 +3416,7 @@
             <div className="card-subtitle" style={{lineHeight:1.8}}>
               1. Firebase Console → Realtime Database<br/>
               2. ルート（一番上）の「＋」をクリック<br/>
-              3. 名前 = <code>coaches</code> を作成<br/>
+              3. 名前 = <code>coaches</code>（顧問・コーチ）または <code>staff</code>（マネージャー）を作成（既にあればそれを開く）<br/>
               4. その中に 名前 = <strong>上のID</strong>、値 = <code>true</code> を追加<br/>
               5. このページを再読込
             </div>
