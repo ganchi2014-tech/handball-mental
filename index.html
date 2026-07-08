@@ -2706,14 +2706,14 @@
 
     // ====== セッションワーク（紙WS廃止→アプリ完結・2026-06-10方針） ======
     const SESSION_WORKS = [
-      { id: 1, icon: '🎯', title: 'IZOF発見ワーク', session: 'Session 1（6/18）キックオフ', fields: [
+      { id: 1, icon: '🎯', title: 'IZOF発見ワーク', session: 'Session 1 キックオフ', fields: [
         { k: 'best', t: 'textarea', label: '① ベストだった試合・場面（いつ・どんなプレー）' },
         { k: 'bestState', t: 'textarea', label: '② その時の自分（緊張・集中・自信・体調はどうだった？）' },
         { k: 'worst', t: 'textarea', label: '③ ワーストだった試合・場面' },
         { k: 'worstState', t: 'textarea', label: '④ その時の自分' },
         { k: 'izofType', t: 'choice', label: '⑤ 自分のIZOF型（決め方: ベストの時の緊張が 1-2→低覚醒型／3→中間型／4-5→高覚醒型。迷ったら中間型でスタート。→IZOFタブにも設定）', options: ['低覚醒型', '中間型', '高覚醒型'] },
       ], note: '行動宣言は【宣言】タブ、試合ノートは【振り返り】タブで。' },
-      { id: 2, icon: '🧮', title: '結果の方程式『ぼくの式』', session: 'Session 2（6/25）', fields: [
+      { id: 2, icon: '🧮', title: '結果の方程式『ぼくの式』', session: 'Session 2', fields: [
         { k: 'do1', t: 'text', label: '① 何をするか 1（技術・戦術・体力／具体的に）' },
         { k: 'do2', t: 'text', label: '② 何をするか 2' },
         { k: 'do3', t: 'text', label: '③ 何をするか 3' },
@@ -2723,28 +2723,28 @@
         { k: 'equation', t: 'text', label: '⑦ ぼくの1行方程式　結果＝［心］×［何をするか］' },
         { k: 'pairWord', t: 'text', label: '⑧ ペアの式で「いいな」と思った言葉' },
       ], note: 'セルフチェックは 🧭セルフチェック で。「続ける1つ」は【宣言】タブへ。' },
-      { id: 3, icon: '🌬', title: '2-3-15呼吸 マイ・ルーティン', session: 'Session 3（7/2）', fields: [
+      { id: 3, icon: '🌬', title: '2-3-15呼吸 マイ・ルーティン', session: 'Session 3', fields: [
         { k: 'feel', t: 'textarea', label: '① 5サイクルやって、体はどう変わった？（「変わらない」も正解）' },
         { k: 'typeNote', t: 'text', label: '② 自分の型での使い方メモ（高覚醒型→過剰な時だけ1〜2サイクル）' },
         { k: 'scene1', t: 'text', label: '③ 使う場面 1（例：7m前／失点直後／寝る前）' },
         { k: 'scene2', t: 'text', label: '④ 使う場面 2' },
         { k: 'whyNot', t: 'textarea', label: '⑤ おためし期間：続かなかった日の理由メモ（忘れた・疲れた・効果不明…なんでもOK）' },
       ], note: '毎日のチェックは【宣言】タブ（28日）で。チームルールはホームのチームボードに表示。' },
-      { id: 6, icon: '🎬', title: 'イメージ マイ・ルーティン', session: 'Session 6（7/23）M2イメージ', fields: [
+      { id: 6, icon: '🎬', title: 'イメージ マイ・ルーティン', session: 'Session 6 M2イメージ', fields: [
         { k: 'bestPlay', t: 'textarea', label: '① 自分のベストプレー（いつ・どこで・どんなプレー。これから決めたいプレーでもOK）' },
         { k: 'senses', t: 'textarea', label: '② それを五感で（見えるもの・聞こえる音・体の感じ。単語の箇条書きでOK）' },
         { k: 'routine', t: 'text', label: '③ 寝る前ルーティン自分版（例: 呼吸1サイクル→イメージ1分）' },
         { k: 'vividness', t: 'choice', label: '④ 今日の鮮明度（1=ほぼ見えない〜5=ほぼ本物。自分メモ・低くて正常・反復で上がる）', options: ['1', '2', '3', '4', '5'] },
-        { k: 'request', t: 'textarea', label: '⑤ 次回(7/30)やりたいこと＋理由ひとこと（呼吸もう一回深く／イメージの続き／目標の話 など自由）' },
+        { k: 'request', t: 'textarea', label: '⑤ 次回やりたいこと＋理由ひとこと（呼吸もう一回深く／イメージの続き／目標の話 など自由）' },
       ], note: '行動宣言の更新は【宣言】タブで。鮮明度は誰とも比べない・自分の前回とだけ。' },
-      { id: 11, icon: '🫁', title: '呼吸の使い分け表', session: 'Session 11（8/27）応用呼吸', fields: [
+      { id: 11, icon: '🫁', title: '呼吸の使い分け表', session: 'Session 11 応用呼吸', fields: [
         { k: 'preGame', t: 'choice', label: '① 試合前 → 使う技（高覚醒型は「使わない」も正解）', options: ['2-3-15', '4-7-8', 'ボックス', '使わない'] },
         { k: 'beforeSleep', t: 'choice', label: '② 寝る前 → 使う技', options: ['2-3-15', '4-7-8', 'ボックス', '使わない'] },
         { k: 'inGame', t: 'choice', label: '③ 試合中・ベンチ → 使う技（30〜60秒で整える）', options: ['ボックス', '2-3-15短め', '使わない'] },
         { k: 'gameSpot', t: 'text', label: '④ 自分の“試合の隙間”（例: ベンチに下がった30秒／7m判定待ち）' },
         { k: 'feel478', t: 'textarea', label: '⑤ 4-7-8とボックスの体感メモ（「ぼーっとした」も正解。7秒きつければ4-4-6でOK）' },
       ], note: '正解は人で違う。自分の取説は自分が編集長。' },
-      { id: 12, icon: '🎯', title: '目標の3本柱（新人戦）', session: 'Session 12（9/3）M3目標', fields: [
+      { id: 12, icon: '🎯', title: '目標の3本柱（新人戦）', session: 'Session 12 M3目標', fields: [
         { k: 'outcome', t: 'text', label: '① 結果目標（勝敗・順位。方角を指すコンパス）' },
         { k: 'performance', t: 'text', label: '② パフォーマンス目標（自分の数字。例: 左45度の決定率40%→50%）' },
         { k: 'process', t: 'text', label: '③ プロセス目標（毎日の行動。完全に自分でコントロールできること）' },
