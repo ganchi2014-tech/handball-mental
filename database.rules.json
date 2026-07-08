@@ -66,8 +66,16 @@
 
     "lab": {
       "$uid": {
-        ".read": "auth != null && $uid === auth.uid",
+        ".read": "auth != null && ($uid === auth.uid || root.child('labLinks').child(auth.uid).child('labUid').val() === $uid)",
         ".write": "auth != null && $uid === auth.uid"
+      }
+    },
+
+    "labLinks": {
+      "$mentalUid": {
+        ".read": "auth != null && (auth.uid === $mentalUid || data.child('labUid').val() === auth.uid)",
+        ".write": "auth != null && ((newData.exists() && newData.child('labUid').val() === auth.uid && newData.child('rosterId').isString() && (!data.exists() || data.child('labUid').val() === auth.uid)) || (!newData.exists() && data.exists() && (data.child('labUid').val() === auth.uid || auth.uid === $mentalUid)))",
+        ".validate": "!newData.exists() || newData.hasChildren(['labUid', 'rosterId'])"
       }
     },
 
