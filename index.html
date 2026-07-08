@@ -798,7 +798,34 @@
       // ----- LAB（自主練ラボ）: 本人の試合カード（/lab/{uid}/matchCards・本人のみread・一回読み） -----
       getMyLabCards: async (uid) => {
         if (!fbDB || !uid) return [];
-        const snap = await fbDB.ref('lab/' + uid + '/matchCards').get();
+        return storage.getMyLabNode(uid, 'matchCards');
+      },
+      // UIDブリッジ解決: mental と LAB は別オリジンで匿名uidが分裂するため、
+      // LAB が書いた /labLinks/{自uid} = {labUid, rosterId} を読み、
+      // rosterToUid[rosterId] === 自uid の突合が通った場合のみ labUid を採用する
+      // （突合はルールでなくここで行う設計 — specs/2026-07-08-lab-bridge-design.md）。
+      _labUidCache: {},
+      resolveLabUid: async (uid) => {
+        if (!fbDB || !uid) return uid;
+        if (storage._labUidCache[uid]) return storage._labUidCache[uid];
+        try {
+          const linkSnap = await fbDB.ref('labLinks/' + uid).get();
+          const link = linkSnap.val();
+          if (!link || !link.labUid || !link.rosterId) return uid;
+          const ridSnap = await fbDB.ref('rosterToUid/' + link.rosterId).get();
+          if (ridSnap.val() !== uid) return uid; // 突合失敗（不正・古いリンク）は無視
+          storage._labUidCache[uid] = link.labUid;
+          return link.labUid;
+        } catch (e) {
+          console.debug('[labLink resolve]', e);
+          return uid;
+        }
+      },
+      // 本人の LAB 記録ノードを一回読み（ブリッジ解決込み）。読めなければ空配列
+      getMyLabNode: async (uid, node) => {
+        if (!fbDB || !uid) return [];
+        const labUid = await storage.resolveLabUid(uid);
+        const snap = await fbDB.ref('lab/' + labUid + '/' + node).get();
         return Object.values(snap.val() || {});
       }
     };
@@ -928,16 +955,19 @@
       const stateRef = useRef(state);
       useEffect(() => { stateRef.current = state; }, [state]);
 
-      // ── 名簿マスター・顧問承認リスト購読（常時）
+      // ── 名簿マスター・顧問承認リスト購読
+      // 認証前に購読すると permission_denied で購読が死んだままになるため、authUid を deps に
+      // 入れて認証確立後に張り直す（/roster 等は要認証）
+      const [rosterLoaded, setRosterLoaded] = useState(false);
       useEffect(() => {
-        if (!fbDB) return;
-        const unsub1 = storage.subscribeRoster(setRoster);
+        if (!fbDB || !authUid) return;
+        const unsub1 = storage.subscribeRoster((v) => { setRoster(v); setRosterLoaded(true); });
         const unsub2 = storage.subscribeRosterToUid(setRosterToUid);
         const unsub3 = storage.subscribeCoaches(setCoaches);
         const unsub4 = storage.subscribeTeam(setTeam);
         const unsub5 = storage.subscribeStaff(setStaff);
         return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); };
-      }, []);
+      }, [authUid]);
 
       // 顧問承認済みか（サーバ /coaches に登録されているか）
       const isApprovedCoach = !!(authUid && coaches[authUid]);
@@ -1038,6 +1068,11 @@
         const unsub = fbAuth.onAuthStateChanged((user) => {
           setAuthUid(user ? user.uid : null);
           setAuthReady(true);
+          // 新規端末は未認証のままだと名簿（/roster は要認証）が読めず、
+          // ログイン画面に名簿が出ない。起動時に匿名サインインしておく
+          if (!user) {
+            fbAuth.signInAnonymously().catch((e) => console.warn('[anon auth]', e));
+          }
         });
         return unsub;
       }, []);
@@ -1123,6 +1158,7 @@
           <>
             <Login
               roster={roster}
+              rosterLoaded={rosterLoaded}
               rosterToUid={rosterToUid}
               authUid={authUid}
               onLogin={async (userInput) => {
@@ -1278,7 +1314,7 @@
     }
 
     // ====== Login ======
-    function Login({ onLogin, roster, rosterToUid, authUid }) {
+    function Login({ onLogin, roster, rosterLoaded, rosterToUid, authUid }) {
       const [pin, setPin] = useState('');
       const [savedPin, setSavedPin] = useState(localStorage.getItem(PIN_KEY) || '');
       const [savedName, setSavedName] = useState(localStorage.getItem(NAME_KEY) || '');
@@ -1475,7 +1511,14 @@
             <p className="subtitle">男子ハンドボール部 メンタル指導</p>
           </div>
 
-          {rosterList.length === 0 ? (
+          {rosterList.length === 0 && !rosterLoaded ? (
+            <div className="login-card" style={{maxWidth:480, margin:'0 auto'}}>
+              <h2>名簿を読み込み中…</h2>
+              <p className="text-small text-muted" style={{marginBottom:16}}>
+                通信状態を確認しています。しばらく待っても表示されない場合は、電波の良い場所でアプリを開き直してください。
+              </p>
+            </div>
+          ) : rosterList.length === 0 ? (
             <div className="login-card" style={{maxWidth:480, margin:'0 auto'}}>
               <h2>名簿がまだありません</h2>
               <p className="text-small text-muted" style={{marginBottom:16}}>
@@ -1914,6 +1957,11 @@
               <span className="tile-icon">🌬</span>
               <div className="tile-title">呼吸ガイド</div>
               <div className="tile-sub">寝る前1サイクルからOK</div>
+            </button>
+            <button className="quick-tile" onClick={() => window.open('https://ganchi2014-tech.github.io/handball-system/', '_blank')}>
+              <span className="tile-icon">🧪</span>
+              <div className="tile-title">HANDBALL LAB</div>
+              <div className="tile-sub">読み・技術はこっち</div>
             </button>
             <button className="quick-tile" onClick={() => onNav('pregame')}>
               <span className="tile-icon">🏟</span>
@@ -4427,11 +4475,13 @@
         return map;
       }, [state.reflections]);
 
-      // LAB: 読み的中率（本人の /lab/{uid}/matchCards を一回読み。読取不可・0件なら非表示が正）
+      // LAB: 記録タイル（本人の /lab/{labUid}/ をブリッジ解決して一回読み。読取不可・0件なら非表示が正）
       const [yomiStat, setYomiStat] = useState(null);
+      const [gkPredStat, setGkPredStat] = useState(null);
+      const [pvStat, setPvStat] = useState(null);
       useEffect(() => {
         let alive = true;
-        if (!authUid) { setYomiStat(null); return; }
+        if (!authUid) { setYomiStat(null); setGkPredStat(null); setPvStat(null); return; }
         storage.getMyLabCards(authUid)
           .then(cards => {
             if (!alive) return;
@@ -4445,6 +4495,23 @@
             setYomiStat(n > 0 ? { n, h, pct: Math.round(h / n * 100) } : null);
           })
           .catch(e => { console.debug('[lab yomi]', e); if (alive) setYomiStat(null); });
+        storage.getMyLabNode(authUid, 'gkPredictions')
+          .then(recs => {
+            if (!alive) return;
+            let n = 0, h = 0;
+            recs.forEach(r => {
+              if (r && (r.hit === true || r.hit === false)) { n++; if (r.hit === true) h++; }
+            });
+            setGkPredStat(n > 0 ? { n, h, pct: Math.round(h / n * 100) } : null);
+          })
+          .catch(e => { console.debug('[lab gk]', e); if (alive) setGkPredStat(null); });
+        storage.getMyLabNode(authUid, 'pvRecords')
+          .then(recs => {
+            if (!alive) return;
+            const n = recs.filter(Boolean).length;
+            setPvStat(n > 0 ? { n } : null);
+          })
+          .catch(e => { console.debug('[lab pv]', e); if (alive) setPvStat(null); });
         return () => { alive = false; };
       }, [authUid]);
 
@@ -4478,15 +4545,36 @@
           <LoadCard state={state} update={update} showToast={showToast} />
           <ConsentCard state={state} update={update} showToast={showToast} />
 
-          {/* LAB: 読み的中率（データなし・読取不可なら非表示） */}
-          {yomiStat && (
-            <div className="card mb-16">
-              <div className="stat-row">
-                <span className="label">🔮 読み的中率</span>
-                <span className="value">{yomiStat.pct}%（的中{yomiStat.h}/丸付け{yomiStat.n}件）</span>
+          {/* LABコーナー（データなし・読取不可なら非表示） */}
+          {(yomiStat || gkPredStat || pvStat) && (
+            <>
+              <div className="section-h">LAB連携</div>
+              <div className="card mb-16">
+                {yomiStat && (
+                  <div className="stat-row">
+                    <span className="label">🔮 読み的中率</span>
+                    <span className="value">{yomiStat.pct}%（的中{yomiStat.h}/丸付け{yomiStat.n}件）</span>
+                  </div>
+                )}
+                {gkPredStat && (
+                  <div className="stat-row">
+                    <span className="label">🧤 GK予測的中率</span>
+                    <span className="value">{gkPredStat.pct}%（的中{gkPredStat.h}/{gkPredStat.n}本）</span>
+                  </div>
+                )}
+                {pvStat && (
+                  <div className="stat-row">
+                    <span className="label">🎯 PV認知記録</span>
+                    <span className="value">{pvStat.n} 件</span>
+                  </div>
+                )}
+                <div className="card-subtitle" style={{marginTop:8}}>LABの記録から（この端末のあなたの分だけ）</div>
+                <button className="btn-ghost mt-16" style={{width:'100%'}}
+                  onClick={() => window.open('https://ganchi2014-tech.github.io/handball-system/', '_blank')}>
+                  🧪 LABを開く →
+                </button>
               </div>
-              <div className="card-subtitle">LABの試合カードから</div>
-            </div>
+            </>
           )}
 
           <div className="section-h">マイ統計（試合データ）</div>
