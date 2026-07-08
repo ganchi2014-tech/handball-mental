@@ -836,16 +836,13 @@
       const schoolYear = (d.getMonth() + 1) >= 4 ? d.getFullYear() : d.getFullYear() - 1;
       return schoolYear - grade + 1;
     }
-    // analyzer互換: デフォルト32名（入学年は今年度から逆算）
+    // analyzer互換: デフォルト22名（入学年は今年度から逆算。2026-07 3年生引退につき3年は含めない）
     function makeDefaultRosterEntries(refDate) {
       const d = refDate || new Date();
-      const g3 = gradeToEnrollmentYear(3, d);
       const g2 = gradeToEnrollmentYear(2, d);
       const g1 = gradeToEnrollmentYear(1, d);
-      const gkSet = new Set(['桑原','杉本','小川','田口','関山']);
+      const gkSet = new Set(['小川','田口','関山']);
       const list = [
-        // 3年（10名）
-        ['赤塚',g3],['岩噌',g3],['川崎',g3],['北村',g3],['辻',g3],['中田',g3],['伴',g3],['山本',g3],['桑原',g3],['杉本',g3],
         // 2年（10名）
         ['新井',g2],['猪田',g2],['北林',g2],['田端',g2],['藤川',g2],['松岡',g2],['村田',g2],['安田',g2],['小川',g2],['田口',g2],
         // 1年（12名）
@@ -4739,39 +4736,42 @@
     function RosterManagement({ roster, rosterToUid, allUsersData, showToast, onBack }) {
       const [editing, setEditing] = useState(null); // {id, ...data} or 'new'
       const [filterGrade, setFilterGrade] = useState('all');
+      const [showRetired, setShowRetired] = useState(false);
 
-      // 名簿を配列化（学年・苗字順）
-      const entries = useMemo(() => {
+      // 名簿を配列化（学年・苗字順）。引退（active=false）は別リストに分ける
+      const allEntries = useMemo(() => {
         const arr = Object.entries(roster || {}).map(([id, data]) => ({
           id,
           ...data,
           grade: computeGrade(data.enrollmentYear),
           displayName: rosterDisplayName(data)
-        })).filter(e => e.active !== false);
+        }));
         arr.sort((a, b) => {
           if (a.grade !== b.grade) return a.grade - b.grade;
           return (a.surname || '').localeCompare(b.surname || '', 'ja');
         });
         return arr;
       }, [roster]);
+      const entries = useMemo(() => allEntries.filter(e => e.active !== false), [allEntries]);
+      const retiredEntries = useMemo(() => allEntries.filter(e => e.active === false), [allEntries]);
 
       const filtered = filterGrade === 'all' ? entries : entries.filter(e => e.grade === Number(filterGrade));
 
       const linkedCount = entries.filter(e => rosterToUid && rosterToUid[e.id]).length;
 
       const seedDefault = async () => {
-        if (Object.keys(roster).length > 0) {
-          if (!confirm(`既に ${Object.keys(roster).length} 名登録されています。デフォルト32名を追加で投入しますか？`)) return;
-        } else {
-          if (!confirm('analyzer デフォルトの32名を投入しますか？')) return;
-        }
         const defaults = makeDefaultRosterEntries();
+        if (Object.keys(roster).length > 0) {
+          if (!confirm(`既に ${Object.keys(roster).length} 名登録されています。デフォルト${defaults.length}名（1・2年）を追加で投入しますか？`)) return;
+        } else {
+          if (!confirm(`analyzer デフォルトの${defaults.length}名（1・2年）を投入しますか？`)) return;
+        }
         const fbDB = window.fbDB;
         for (const entry of defaults) {
           const newId = fbDB.ref('roster').push().key;
           await storage.upsertRoster(newId, entry);
         }
-        showToast(`32名を投入しました`);
+        showToast(`${defaults.length}名を投入しました`);
       };
 
       const save = async (data) => {
@@ -4783,17 +4783,40 @@
           enrollmentYear: Number(data.enrollmentYear),
           position: data.position || '',
           isGK: !!data.isGK,
-          active: true
+          // 引退状態を保持（編集で無言復帰させない）。復帰は「復帰」ボタンから明示的に行う
+          active: editing.active === false ? false : true
         });
         setEditing(null);
         showToast(editing.id ? '更新しました' : '追加しました');
       };
 
       const remove = async () => {
-        if (!confirm(`${editing.surname} を削除しますか？\n\n試合データへの紐付けが切れますが、復元はできません。\n（卒業生は「アクティブ無効化」を推奨）`)) return;
+        if (!confirm(`${editing.surname} を削除しますか？\n\n試合データへの紐付けが切れますが、復元はできません。\n（卒業・引退は削除でなく「引退にする」を推奨）`)) return;
         await storage.deleteRoster(editing.id);
         setEditing(null);
         showToast('削除しました');
+      };
+
+      // 引退フラグ（active=false）— データは無傷のまま名簿・選手選択から非表示にする
+      const setActive = async (id, active) => {
+        await storage.upsertRoster(id, { active });
+      };
+
+      const retire = async () => {
+        if (!confirm(`${editing.displayName || editing.surname} を引退にしますか？\n\n名簿・選手選択から非表示になりますが、過去の記録・連携はすべて残ります（「復帰」でいつでも戻せます）。`)) return;
+        await setActive(editing.id, false);
+        setEditing(null);
+        showToast('引退にしました');
+      };
+
+      const grade3Actives = entries.filter(e => e.grade === 3);
+      const retireGrade3 = async () => {
+        const names = grade3Actives.map(e => e.displayName).join('・');
+        if (!confirm(`3年生 ${grade3Actives.length}名を一括で引退にしますか？\n\n${names}\n\n過去の記録・連携はすべて残ります（「復帰」でいつでも戻せます）。`)) return;
+        for (const e of grade3Actives) {
+          await setActive(e.id, false);
+        }
+        showToast(`${grade3Actives.length}名を引退にしました`);
       };
 
       return (
@@ -4804,8 +4827,8 @@
           {entries.length === 0 && (
             <div className="card">
               <div className="card-title">名簿がまだ空です</div>
-              <div className="card-subtitle">analyzer のデフォルト32名を投入できます</div>
-              <button className="btn mt-16" onClick={seedDefault}>📋 デフォルト32名を投入</button>
+              <div className="card-subtitle">analyzer のデフォルト名簿（1・2年）を投入できます</div>
+              <button className="btn mt-16" onClick={seedDefault}>📋 デフォルト名簿を投入</button>
             </div>
           )}
 
@@ -4819,6 +4842,9 @@
                 ))}
               </div>
               <button className="btn mb-16" onClick={() => setEditing({grade:1})}>+ 選手を追加</button>
+              {grade3Actives.length > 0 && (
+                <button className="btn-ghost mb-16" style={{marginLeft:8}} onClick={retireGrade3}>🎓 3年生を一括引退（{grade3Actives.length}名）</button>
+              )}
             </>
           )}
 
@@ -4852,11 +4878,35 @@
             );
           })}
 
+          {retiredEntries.length > 0 && (
+            <div className="card mt-16">
+              <div className="card-title" style={{cursor:'pointer'}} onClick={() => setShowRetired(!showRetired)}>
+                🎓 引退選手 {retiredEntries.length}名 {showRetired ? '▲' : '▼'}
+              </div>
+              {showRetired && retiredEntries.map(e => (
+                <div key={e.id} className="list-item">
+                  <div>
+                    <div className="title">{e.surname} {e.fullName && <span className="text-small text-muted">({e.fullName})</span>}</div>
+                    <div className="sub">{e.enrollmentYear ? `${e.enrollmentYear}年入学` : ''}{e.isGK && ' / GK'} / 引退</div>
+                  </div>
+                  <div className="right">
+                    <button className="btn-ghost" style={{padding:'6px 10px', fontSize:12}} onClick={async () => {
+                      if (!confirm(`${e.surname} を現役に復帰させますか？`)) return;
+                      await setActive(e.id, true);
+                      showToast('復帰しました');
+                    }}>復帰</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {editing && (
             <RosterEditor
               initial={editing}
               onSave={save}
               onDelete={editing.id ? remove : null}
+              onRetire={editing.id && editing.active !== false ? retire : null}
               onCancel={() => setEditing(null)}
             />
           )}
@@ -4868,14 +4918,14 @@
               ・「3年生」固定ではなく「2024年入学」のように記録<br/>
               ・年度切替時に手動更新不要<br/>
               ・analyzer 表示名 ①②③ は自動生成<br/>
-              ・卒業生は削除でなく「アクティブ無効」推奨（試合データ保持のため）
+              ・卒業・引退は削除でなく「引退にする」（過去の記録・連携を保持したまま非表示。「復帰」で戻せます）
             </div>
           </div>
         </>
       );
     }
 
-    function RosterEditor({ initial, onSave, onCancel, onDelete }) {
+    function RosterEditor({ initial, onSave, onCancel, onDelete, onRetire }) {
       const today = new Date();
       const thisYear = today.getMonth() + 1 >= 4 ? today.getFullYear() : today.getFullYear() - 1;
       const [d, setD] = useState({
@@ -4930,6 +4980,7 @@
               </label>
             </div>
             <button className="btn" disabled={!d.surname} onClick={() => onSave(d)}>{initial.id ? '更新' : '追加'}</button>
+            {onRetire && <button className="btn-ghost mt-16" onClick={onRetire}>🎓 引退にする（記録は残ります）</button>}
             {onDelete && <button className="btn btn-danger mt-16" onClick={onDelete}>削除</button>}
           </div>
         </div>
