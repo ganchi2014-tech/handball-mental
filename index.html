@@ -5379,76 +5379,82 @@
     }
 
     // ====== CSV Import (analyzer出力CSV取込) ======
+    // 解決ロジックは lib/dedupe.js（resolveCsvRows）。守備行はGKに配信・複数試合対応・
+    // 未一致名はコーチが手動対応付け（全て解決するまで確定ボタン無効 = 黙って捨てない）
     function CsvImport({ roster, rosterToUid, showToast, onBack }) {
-      const [parsed, setParsed] = useState(null); // {headers, rows}
-      const [stats, setStats] = useState(null);    // {matched, unmatched, byPlayer}
+      const [rows, setRows] = useState(null);          // パース済み全行
+      const [manualMap, setManualMap] = useState({});  // {名前: rosterId|'skip'}
       const [busy, setBusy] = useState(false);
+
+      // 表示名＋（チーム内で一意な正規化姓）→ rosterId。引退選手も含める（過去CSVのため）
+      const nameToRid = useMemo(() => {
+        const map = {};
+        const bareCount = {};
+        Object.entries(roster || {}).forEach(([rid, r]) => {
+          if (!r) return;
+          map[rosterDisplayName(r)] = rid;
+          const bare = HMDedupe.normalizeSurname(r.surname);
+          bareCount[bare] = (bareCount[bare] || 0) + 1;
+        });
+        Object.entries(roster || {}).forEach(([rid, r]) => {
+          if (!r) return;
+          const bare = HMDedupe.normalizeSurname(r.surname);
+          if (bareCount[bare] === 1) map[bare] = rid; // 姓が一意なときだけ姓でも引ける
+        });
+        return map;
+      }, [roster]);
+
+      const resolution = useMemo(
+        () => rows ? HMDedupe.resolveCsvRows(rows, nameToRid, manualMap) : null,
+        [rows, nameToRid, manualMap]);
 
       const onFile = async (file) => {
         if (!file) return;
         const text = await file.text();
-        // BOMを除去
         const clean = text.replace(/^﻿/, '');
         const lines = clean.split(/\r?\n/).filter(Boolean);
-        if (lines.length < 2) {
-          alert('データ行がありません');
+        if (lines.length < 2) { alert('データ行がありません'); return; }
+        const headers = parseCsvLine(lines[0]);
+        if (!headers.includes('player') || !headers.includes('result')) {
+          alert('analyzer出力CSVではないようです（player / result 列が見つかりません）');
           return;
         }
-        const headers = parseCsvLine(lines[0]);
-        const rows = lines.slice(1).map(l => {
+        setRows(lines.slice(1).map(l => {
           const cells = parseCsvLine(l);
           const row = {};
           headers.forEach((h, i) => row[h] = cells[i] || '');
           return row;
-        });
-        // analyzer の player列 → rosterId 逆引き
-        const nameToRosterId = {};
-        for (const [rid, r] of Object.entries(roster || {})) {
-          nameToRosterId[rosterDisplayName(r)] = rid;
-        }
-        let matched = 0, unmatched = 0;
-        const byPlayer = {};
-        const unmatchedNames = new Set();
-        rows.forEach(r => {
-          const name = r.player;
-          if (!name) return;
-          const rid = nameToRosterId[name];
-          if (rid) {
-            matched++;
-            byPlayer[name] = (byPlayer[name] || 0) + 1;
-            r._rosterId = rid;
-            r._uid = (rosterToUid || {})[rid];
-          } else {
-            unmatched++;
-            unmatchedNames.add(name);
-            r._rosterId = null;
-            r._uid = null;
-          }
-        });
-        setParsed({ headers, rows });
-        setStats({ matched, unmatched, byPlayer, unmatchedNames: Array.from(unmatchedNames) });
+        }));
+        setManualMap({});
       };
 
       const commit = async () => {
-        if (!parsed) return;
+        if (!resolution) return;
+        const games = Object.entries(resolution.byGame);
+        if (games.length === 0) return;
+        if (!confirm(`${games.length}試合・${resolution.matchedRows}行を配信します。\n同じ試合ID（日付_相手）の既存データは上書きされます。よろしいですか？`)) return;
         setBusy(true);
         try {
-          const gameDate = (parsed.rows[0] && parsed.rows[0].date) || todayStr();
-          const opponent = (parsed.rows[0] && parsed.rows[0].opponent) || 'unknown';
-          const gameId = gameDate + '_' + opponent.replace(/[^a-zA-Z0-9一-龯ぁ-んァ-ヶ]/g, '');
-          let saved = 0;
-          for (let i = 0; i < parsed.rows.length; i++) {
-            const r = parsed.rows[i];
-            if (!r._uid) continue;
-            const row = { ...r };
-            delete row._rosterId;
-            delete row._uid;
-            await storage.saveGameStats(r._uid, gameId, i, row);
-            saved++;
+          let savedPlayers = 0;
+          const skippedNames = new Set();
+          for (const [gameId, g] of games) {
+            for (const [rid, ridRows] of Object.entries(g.byRid)) {
+              const uid = (rosterToUid || {})[rid];
+              if (!uid) {
+                const r = roster[rid];
+                skippedNames.add(r ? rosterDisplayName(r) : rid);
+                continue;
+              }
+              const rowsObj = {};
+              ridRows.forEach((row, i) => { rowsObj[i] = row; });
+              await storage.saveGameStatsBulk(uid, gameId, rowsObj); // set() = 同一試合はまるごと置換
+              savedPlayers++;
+            }
           }
-          showToast(`${saved}行を保存しました（試合: ${gameId}）`);
-          setParsed(null);
-          setStats(null);
+          let msg = `✅ ${games.length}試合を配信（延べ${savedPlayers}名分）`;
+          if (skippedNames.size > 0) msg += `\n⚠ mental未連携でスキップ: ${Array.from(skippedNames).join('・')}\n（選手がログインで連携したあと、同じCSVを再取込してください）`;
+          alert(msg);
+          setRows(null); setManualMap({});
         } catch (e) {
           console.error(e);
           alert('保存中にエラー: ' + e.message);
@@ -5457,20 +5463,22 @@
         }
       };
 
+      const unresolvedCount = resolution ? resolution.unmatched.filter(n => !manualMap[n]).length : 0;
+
       return (
         <>
           <button className="btn-ghost mb-16" onClick={onBack}>← 顧問Dashboardに戻る</button>
           <div className="section-h">CSV取込（analyzer出力）</div>
 
-          {!parsed && (
+          {!rows && (
             <>
               <div className="card">
                 <div className="card-title">使い方</div>
                 <div className="card-subtitle" style={{lineHeight:1.7}}>
                   1. handball-analyzer で試合データをCSVエクスポート<br/>
-                  2. このページでCSVファイルを選択<br/>
-                  3. プレビュー確認 → 確定<br/>
-                  4. 各選手のアプリに自動配信
+                  2. このページでCSVファイルを選択（複数試合が混ざったCSVもOK）<br/>
+                  3. プレビューで紐付けを確認 → 確定<br/>
+                  4. 各選手のマイ統計に配信（GKのセーブ率も入ります）
                 </div>
               </div>
               <div className="card mt-16">
@@ -5483,40 +5491,59 @@
             </>
           )}
 
-          {parsed && stats && (
+          {resolution && (
             <>
               <div className="card">
                 <div className="card-title">プレビュー</div>
                 <div className="summary-stats" style={{marginTop:12}}>
-                  <div className="stat-card"><div className="num">{parsed.rows.length}</div><div className="label">総行数</div></div>
-                  <div className="stat-card"><div className="num" style={{color:'var(--success)'}}>{stats.matched}</div><div className="label">紐付OK</div></div>
-                  <div className="stat-card"><div className="num" style={{color:'var(--warning)'}}>{stats.unmatched}</div><div className="label">未紐付</div></div>
+                  <div className="stat-card"><div className="num">{Object.keys(resolution.byGame).length}</div><div className="label">試合</div></div>
+                  <div className="stat-card"><div className="num" style={{color:'var(--success)'}}>{resolution.matchedRows}</div><div className="label">紐付OK行</div></div>
+                  <div className="stat-card"><div className="num" style={{color: resolution.unmatched.length ? 'var(--warning)' : 'var(--text-3)'}}>{resolution.unmatched.length}</div><div className="label">要対応の名前</div></div>
                 </div>
               </div>
 
-              {stats.unmatched > 0 && (
+              {resolution.unmatched.length > 0 && (
                 <div className="card mt-16" style={{borderLeft:'3px solid var(--warning)'}}>
-                  <div className="card-title">⚠ 名簿にない選手</div>
-                  <div className="card-subtitle">この選手の行は保存されません。名簿管理で追加してから再実行してください。</div>
-                  <ul style={{marginTop:8}}>
-                    {stats.unmatchedNames.map(n => <li key={n}>{n}</li>)}
-                  </ul>
+                  <div className="card-title">⚠ 名簿と一致しない名前</div>
+                  <div className="card-subtitle">名簿の選手を指定するか「取り込まない」を選んでください（全部決めるまで確定できません）。</div>
+                  {resolution.unmatched.map(n => (
+                    <div key={n} className="stat-row">
+                      <span className="label">{n}</span>
+                      <select value={manualMap[n] || ''} onChange={e => setManualMap({ ...manualMap, [n]: e.target.value })}>
+                        <option value="">（未選択）</option>
+                        <option value="skip">取り込まない</option>
+                        {Object.entries(roster || {}).map(([rid, r]) => (
+                          <option key={rid} value={rid}>{rosterDisplayName(r)}{r.active === false ? '（引退）' : ''}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
                 </div>
               )}
 
-              <div className="section-h mt-16">選手別 行数</div>
-              {Object.entries(stats.byPlayer).map(([name, cnt]) => (
-                <div key={name} className="list-item">
-                  <div>
-                    <div className="title">{name}</div>
-                    <div className="sub">{cnt} 行</div>
+              <div className="section-h mt-16">試合別の配信先</div>
+              {Object.entries(resolution.byGame).map(([gameId, g]) => (
+                <div key={gameId} className="card" style={{marginBottom:12}}>
+                  <div className="card-title">{gameId}</div>
+                  <div className="card-subtitle" style={{lineHeight:1.8}}>
+                    {Object.entries(g.byRid).map(([rid, ridRows]) => {
+                      const r = roster[rid];
+                      const linked = (rosterToUid || {})[rid];
+                      return (
+                        <span key={rid} style={{marginRight:10, color: linked ? undefined : 'var(--warning)'}}>
+                          {r ? rosterDisplayName(r) : rid} {ridRows.length}行{linked ? '' : '（未連携→スキップ）'}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
 
               <div style={{display:'flex', gap:8, marginTop:16}}>
-                <button className="btn btn-secondary" style={{flex:1}} onClick={() => { setParsed(null); setStats(null); }}>キャンセル</button>
-                <button className="btn" style={{flex:1}} disabled={busy || stats.matched === 0} onClick={commit}>{busy ? '保存中...' : `確定（${stats.matched}行）`}</button>
+                <button className="btn btn-secondary" style={{flex:1}} onClick={() => { setRows(null); setManualMap({}); }}>キャンセル</button>
+                <button className="btn" style={{flex:1}} disabled={busy || resolution.matchedRows === 0 || unresolvedCount > 0} onClick={commit}>
+                  {busy ? '保存中...' : (unresolvedCount > 0 ? `未対応の名前が${unresolvedCount}件` : '確定して配信')}
+                </button>
               </div>
             </>
           )}
