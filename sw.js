@@ -5,13 +5,15 @@
 // 新機能（例: フィジカル入力ボタン）が出なかった → v4でHTMLは network-first（オンライン時は常に最新）。
 // v4の問題: ASSETS の @babel/standalone がバージョン無指定(=latest=v8)で index.html(@7.26.4固定)と不一致。
 // 圏外では固定版(@7.26.4)がプリキャッシュされず白画面になり得た → v5で @7.26.4 に統一（白画面固定の貫徹）。
-const CACHE_NAME = 'handball-mental-v5';
+// v6: lib/dedupe.js（名簿統合・CSV取込の純関数）をプリキャッシュに追加
+const CACHE_NAME = 'handball-mental-v6';
 
 // アプリ起動に必要な全資産（CDN含む）を初回インストール時にプリキャッシュ
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
+  './lib/dedupe.js',
   'https://unpkg.com/react@18/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
   'https://unpkg.com/@babel/standalone@7.26.4/babel.min.js',
