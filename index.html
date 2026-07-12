@@ -1097,11 +1097,13 @@
       }, [authUid]);
 
       // ── クラウド試合購読（顧問のみ）
+      // 承認(/coaches登録)前に購読すると permission_denied で購読が死んだままになるため、
+      // isApprovedCoach を待ち、承認が下りた瞬間に再購読する
       useEffect(() => {
-        if (!authUid || !state.user || !state.user.isCoach) { setMatches({}); return; }
+        if (!authUid || !state.user || !state.user.isCoach || !isApprovedCoach) { setMatches({}); return; }
         const unsub = storage.subscribeMatches(setMatches);
         return unsub;
-      }, [authUid, state.user && state.user.isCoach]);
+      }, [authUid, state.user && state.user.isCoach, isApprovedCoach]);
 
       // ── クラウド試合を各選手の gameStats に取込（ワンボタン/自動共通）
       const importMatch = useCallback(async (matchId, matchData) => {
@@ -1212,14 +1214,16 @@
       }, [authUid, state.user && state.user.id]);
 
       // ── 顧問モード: 全選手データ購読
+      // 承認(/coaches登録)前に購読すると permission_denied で購読が死んだままになり、
+      // 承認後も選手0名のままになる。isApprovedCoach を待って購読・承認と同時に再購読
       useEffect(() => {
-        if (!authUid || !state.user || !state.user.isCoach) {
+        if (!authUid || !state.user || !state.user.isCoach || !isApprovedCoach) {
           setAllUsersData({});
           return;
         }
         const unsub = storage.subscribeAllUsers(setAllUsersData);
         return unsub;
-      }, [authUid, state.user && state.user.isCoach]);
+      }, [authUid, state.user && state.user.isCoach, isApprovedCoach]);
 
       // ── 永続化: localStorage 即時 + RTDB デバウンス（500ms）
       useEffect(() => {
