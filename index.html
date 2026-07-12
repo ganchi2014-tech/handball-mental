@@ -4966,7 +4966,7 @@
         if (!editing.id) {
           const key = HMDedupe.dupKey({ surname: data.surname, enrollmentYear: Number(data.enrollmentYear) });
           const dup = Object.values(roster || {}).find(r => r && HMDedupe.dupKey(r) === key);
-          if (dup && !confirm(`同じ姓・同じ入学年度の「${rosterDisplayName(dup)}」が既に登録されています。\n同一人物なら追加せず、既存の行を使ってください。\n\n別人として追加しますか？`)) return;
+          if (dup && !confirm(`同じ姓・同じ入学年度の「${rosterDisplayName(dup)}${dup.active === false ? '（引退）' : ''}」が既に登録されています。\n同一人物なら追加せず、既存の行を使ってください。\n\n別人として追加しますか？`)) return;
         }
         const id = editing.id || fbDB.ref('roster').push().key;
         await storage.upsertRoster(id, {
