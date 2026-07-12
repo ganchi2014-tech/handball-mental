@@ -3567,7 +3567,7 @@
         return <RosterManagement roster={roster} rosterToUid={rosterToUid} allUsersData={allUsersData} showToast={showToast} onBack={() => setTab('overview')} />;
       }
       if (tab === 'csv') {
-        return <CsvImport roster={roster} rosterToUid={rosterToUid} showToast={showToast} onBack={() => setTab('overview')} />;
+        return <CsvImport roster={roster} rosterToUid={rosterToUid} matches={matches} showToast={showToast} onBack={() => setTab('overview')} />;
       }
       if (tab === 'cloud') {
         return <CloudMatches matches={matches} roster={roster} rosterToUid={rosterToUid} autoImport={autoImport} onToggleAutoImport={onToggleAutoImport} importMatch={importMatch} showToast={showToast} onBack={() => setTab('overview')} />;
@@ -5381,7 +5381,7 @@
     // ====== CSV Import (analyzer出力CSV取込) ======
     // 解決ロジックは lib/dedupe.js（resolveCsvRows）。守備行はGKに配信・複数試合対応・
     // 未一致名はコーチが手動対応付け（全て解決するまで確定ボタン無効 = 黙って捨てない）
-    function CsvImport({ roster, rosterToUid, showToast, onBack }) {
+    function CsvImport({ roster, rosterToUid, matches, showToast, onBack }) {
       const [rows, setRows] = useState(null);          // パース済み全行
       const [manualMap, setManualMap] = useState({});  // {名前: rosterId|'skip'}
       const [busy, setBusy] = useState(false);
@@ -5408,6 +5408,17 @@
         () => rows ? HMDedupe.resolveCsvRows(rows, nameToRid, manualMap) : null,
         [rows, nameToRid, manualMap]);
 
+      // クラウド取込済みの試合（同じ 日付_相手）を検知 — 二重計上防止のため既定で除外
+      const cloudDupIds = useMemo(() => {
+        const s = new Set();
+        Object.values(matches || {}).forEach(m => {
+          if (m && m.importedAt) s.add(HMDedupe.csvGameId({ date: m.date, opponent: m.opponent }));
+        });
+        return s;
+      }, [matches]);
+      const [excluded, setExcluded] = useState({}); // {gameId: bool} 明示切替。未設定はcloudDupIdsに従う
+      const isExcluded = (gid) => excluded[gid] !== undefined ? excluded[gid] : cloudDupIds.has(gid);
+
       const onFile = async (file) => {
         if (!file) return;
         const text = await file.text();
@@ -5426,17 +5437,18 @@
           return row;
         }));
         setManualMap({});
+        setExcluded({});
       };
 
       const commit = async () => {
         if (!resolution) return;
-        const games = Object.entries(resolution.byGame);
-        if (games.length === 0) return;
-        if (!confirm(`${games.length}試合・${resolution.matchedRows}行を配信します。\n同じ試合ID（日付_相手）の既存データは上書きされます。よろしいですか？`)) return;
+        const games = Object.entries(resolution.byGame).filter(([gid]) => !isExcluded(gid));
+        if (games.length === 0) { alert('取り込む試合がありません（すべて除外されています）'); return; }
+        if (!confirm(`${games.length}試合を配信します。\n同じ試合ID（日付_相手）は、この試合に含まれる選手の分だけ上書きされます。よろしいですか？`)) return;
         setBusy(true);
+        let savedPlayers = 0;
+        const skippedNames = new Set();
         try {
-          let savedPlayers = 0;
-          const skippedNames = new Set();
           for (const [gameId, g] of games) {
             for (const [rid, ridRows] of Object.entries(g.byRid)) {
               const uid = (rosterToUid || {})[rid];
@@ -5454,10 +5466,10 @@
           let msg = `✅ ${games.length}試合を配信（延べ${savedPlayers}名分）`;
           if (skippedNames.size > 0) msg += `\n⚠ mental未連携でスキップ: ${Array.from(skippedNames).join('・')}\n（選手がログインで連携したあと、同じCSVを再取込してください）`;
           alert(msg);
-          setRows(null); setManualMap({});
+          setRows(null); setManualMap({}); setExcluded({});
         } catch (e) {
           console.error(e);
-          alert('保存中にエラー: ' + e.message);
+          alert('保存中にエラー: ' + e.message + '\nここまでに延べ' + savedPlayers + '名分を保存済みです。同じCSVを再取込すれば安全に上書きで続行できます。');
         } finally {
           setBusy(false);
         }
@@ -5536,12 +5548,22 @@
                       );
                     })}
                   </div>
+                  {cloudDupIds.has(gameId) && (
+                    <div className="text-small" style={{color:'var(--warning)', marginTop:6}}>
+                      ⚠ クラウド取込済みの試合と同じ日付・相手です。二重に取り込むと成績が水増しされます。
+                    </div>
+                  )}
+                  <label style={{display:'flex', alignItems:'center', gap:8, marginTop:8, cursor:'pointer'}}>
+                    <input type="checkbox" checked={!isExcluded(gameId)}
+                      onChange={e => setExcluded({ ...excluded, [gameId]: !e.target.checked })} />
+                    <span className="text-small">この試合を取り込む</span>
+                  </label>
                 </div>
               ))}
 
               <div style={{display:'flex', gap:8, marginTop:16}}>
-                <button className="btn btn-secondary" style={{flex:1}} onClick={() => { setRows(null); setManualMap({}); }}>キャンセル</button>
-                <button className="btn" style={{flex:1}} disabled={busy || resolution.matchedRows === 0 || unresolvedCount > 0} onClick={commit}>
+                <button className="btn btn-secondary" style={{flex:1}} onClick={() => { setRows(null); setManualMap({}); setExcluded({}); }}>キャンセル</button>
+                <button className="btn" style={{flex:1}} disabled={busy || resolution.matchedRows === 0 || unresolvedCount > 0 || Object.keys(resolution.byGame).every(gid => isExcluded(gid))} onClick={commit}>
                   {busy ? '保存中...' : (unresolvedCount > 0 ? `未対応の名前が${unresolvedCount}件` : '確定して配信')}
                 </button>
               </div>
