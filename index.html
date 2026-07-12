@@ -4918,6 +4918,30 @@
       );
     }
 
+    // ====== 名簿の重複グループ（統合先の選択と実行ボタン） ======
+    function DupGroup({ group, rosterToUid, onMerge }) {
+      const suggested = HMDedupe.planMerge(group, rosterToUid).canonicalId;
+      const [canonicalId, setCanonicalId] = useState(suggested);
+      return (
+        <div style={{marginTop:12, paddingTop:12, borderTop:'1px solid rgba(255,255,255,0.08)'}}>
+          {group.entries.map(e => (
+            <label key={e.id} style={{display:'flex', alignItems:'center', gap:8, padding:'4px 0', cursor:'pointer'}}>
+              <input type="radio" name={'dup-' + group.key} checked={canonicalId === e.id} onChange={() => setCanonicalId(e.id)} />
+              <span>
+                {rosterDisplayName(e)}（{e.enrollmentYear}年入学{e.active === false ? '・引退' : ''}）
+                {rosterToUid && rosterToUid[e.id]
+                  ? <span style={{color:'var(--accent)'}}> ✓ 端末連携あり</span>
+                  : <span className="text-muted"> 連携なし</span>}
+              </span>
+            </label>
+          ))}
+          <button className="btn-ghost mt-16" onClick={() => onMerge(group, canonicalId)}>
+            選択した行に統合（他 {group.entries.length - 1} 行を削除）
+          </button>
+        </div>
+      );
+    }
+
     // ====== Roster Management (顧問用) ======
     function RosterManagement({ roster, rosterToUid, allUsersData, showToast, onBack }) {
       const [editing, setEditing] = useState(null); // {id, ...data} or 'new'
@@ -4944,6 +4968,40 @@
       const filtered = filterGrade === 'all' ? entries : entries.filter(e => e.grade === Number(filterGrade));
 
       const linkedCount = entries.filter(e => rosterToUid && rosterToUid[e.id]).length;
+
+      // 重複（同姓＋同入学年度）の検出と統合
+      const dupGroups = useMemo(() => HMDedupe.findRosterDuplicates(roster), [roster]);
+
+      const executeMerge = async (group, canonicalId) => {
+        const plan = HMDedupe.planMerge(group, rosterToUid, canonicalId);
+        const canonical = group.entries.find(e => e.id === plan.canonicalId);
+        const lines = [`「${rosterDisplayName(canonical)}」に統合します。`, `削除される重複行: ${plan.deleteIds.length}件`];
+        if (plan.moveUid) lines.push('端末連携を統合先に引き継ぎます。');
+        if (plan.conflict) lines.push('⚠ 複数の行が別々の端末に連携済みです。統合先以外の連携は解除され、その端末は次回ログインで名簿から選び直しになります（配信済み試合データは「クラウド試合取込」の再配信で復元できます）。');
+        if (!confirm(lines.join('\n'))) return;
+        try {
+          if (plan.moveUid) await storage.linkRosterToUid(plan.canonicalId, plan.moveUid);
+          for (const id of plan.unlinkIds) {
+            // uid を引き継ぐ場合は LAB ブリッジ(labLinks)の rosterId も統合先へ付替え（失敗しても続行）
+            const uid = rosterToUid[id];
+            if (uid && plan.moveUid === uid) {
+              try {
+                const snap = await window.fbDB.ref('labLinks/' + uid).get();
+                const link = snap.val();
+                if (link && link.rosterId === id) {
+                  await window.fbDB.ref('labLinks/' + uid + '/rosterId').set(plan.canonicalId);
+                }
+              } catch (e) { console.warn('[merge labLinks]', e); }
+            }
+            await storage.unlinkRoster(id);
+          }
+          for (const id of plan.deleteIds) await storage.deleteRoster(id);
+          showToast(`統合しました（${plan.deleteIds.length}行を削除）`);
+        } catch (e) {
+          console.error('[merge]', e);
+          alert('統合中にエラー: ' + e.message + '\n途中まで実行された可能性があります。重複チェックの表示を確認してください。');
+        }
+      };
 
       const seedDefault = async () => {
         const defaults = makeDefaultRosterEntries();
@@ -5015,6 +5073,16 @@
         <>
           <button className="btn-ghost mb-16" onClick={onBack}>← 顧問Dashboardに戻る</button>
           <div className="section-h">名簿管理 <span className="small">{entries.length}名 / mental連携 {linkedCount}名</span></div>
+
+          {dupGroups.length > 0 && (
+            <div className="card" style={{borderLeft:'3px solid var(--warning)', marginBottom:16}}>
+              <div className="card-title">⚠ 名簿の重複 {dupGroups.length}組</div>
+              <div className="card-subtitle">同じ姓・同じ入学年度の行が複数あります。放置すると試合データが正しく配信されません（同姓でも学年が違うのは別人なのでここには出ません）。</div>
+              {dupGroups.map(group => (
+                <DupGroup key={group.key} group={group} rosterToUid={rosterToUid} onMerge={executeMerge} />
+              ))}
+            </div>
+          )}
 
           {entries.length === 0 && (
             <div className="card">
