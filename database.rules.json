@@ -24,12 +24,29 @@
 
     "coaches": {
       ".read": "auth != null",
-      ".write": false
+      ".write": false,
+      "$uid": {
+        ".write": "auth != null && ((auth.uid === $uid && newData.isString() && newData.val() === root.child('coachClaims').child($uid).child('coachId').val()) || (root.child('coaches').child(auth.uid).exists() && !newData.exists()))"
+      }
     },
 
     "staff": {
       ".read": "auth != null",
       ".write": false
+    },
+
+    "coachNames": {
+      ".read": "auth != null",
+      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+    },
+    "coachPins": {
+      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+    },
+    "coachClaims": {
+      "$uid": {
+        ".write": "auth != null && (auth.uid === $uid || (root.child('coaches').child(auth.uid).exists() && !newData.exists()))",
+        ".validate": "newData.child('coachId').isString() && newData.child('pinHash').isString() && newData.child('pinHash').val() === root.child('coachPins').child(newData.child('coachId').val()).val()"
+      }
     },
 
     "physicals": {
@@ -66,15 +83,15 @@
 
     "lab": {
       "$uid": {
-        ".read": "auth != null && ($uid === auth.uid || root.child('labLinks').child(auth.uid).child('labUid').val() === $uid)",
+        ".read": "auth != null && ($uid === auth.uid || root.child('labLinks').child(auth.uid).child('labUid').val() === $uid || root.child('coaches').child(auth.uid).exists())",
         ".write": "auth != null && $uid === auth.uid"
       }
     },
 
     "labLinks": {
       "$mentalUid": {
-        ".read": "auth != null && (auth.uid === $mentalUid || data.child('labUid').val() === auth.uid)",
-        ".write": "auth != null && ((newData.exists() && newData.child('labUid').val() === auth.uid && newData.child('rosterId').isString() && (!data.exists() || data.child('labUid').val() === auth.uid)) || (!newData.exists() && data.exists() && (data.child('labUid').val() === auth.uid || auth.uid === $mentalUid)))",
+        ".read": "auth != null && (auth.uid === $mentalUid || data.child('labUid').val() === auth.uid || root.child('coaches').child(auth.uid).exists())",
+        ".write": "auth != null && ((newData.exists() && newData.child('labUid').val() === auth.uid && newData.child('rosterId').isString() && (!data.exists() || data.child('labUid').val() === auth.uid)) || (!newData.exists() && data.exists() && (data.child('labUid').val() === auth.uid || auth.uid === $mentalUid)) || (root.child('coaches').child(auth.uid).exists() && data.exists() && newData.exists() && newData.child('labUid').val() === data.child('labUid').val() && newData.child('rosterId').isString()))",
         ".validate": "!newData.exists() || newData.hasChildren(['labUid', 'rosterId'])"
       }
     },

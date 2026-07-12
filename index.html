@@ -28,6 +28,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js"></script>
+  <script src="./lib/dedupe.js"></script>
   <script>
     // ====== Firebase 初期化 ======
     const firebaseConfig = {
@@ -795,6 +796,40 @@
         const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
         return () => ref.off('value', handler);
       },
+      // ----- 顧問ディレクトリ（PINログイン用。coachPins の正誤はルールが判定） -----
+      subscribeCoachNames: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('coachNames');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
+        return () => ref.off('value', handler);
+      },
+      upsertCoachEntry: async (coachId, name, pinHash) => {
+        if (!fbDB || !coachId || !name) return;
+        await fbDB.ref('coachNames/' + coachId).set(name);
+        if (pinHash) await fbDB.ref('coachPins/' + coachId).set(pinHash);
+      },
+      removeCoachEntry: async (coachId) => {
+        if (!fbDB || !coachId) return;
+        await fbDB.ref('coachPins/' + coachId).remove();
+        await fbDB.ref('coachNames/' + coachId).remove();
+      },
+      // 新端末の顧問自己承認。PIN不一致なら1つ目の set がルールで拒否される。
+      // この2書込みは分割必須: 単一の update() にまとめると coaches 側のルール検証が
+      // 書込前の root を参照し、claim 不在として失敗する（RTDBルールは書込前スナップショット基準）
+      claimCoach: async (authUid, coachId, pinHash) => {
+        if (!fbDB || !authUid || !coachId) throw new Error('not ready');
+        await fbDB.ref('coachClaims/' + authUid).set({ coachId, pinHash, at: firebase.database.ServerValue.TIMESTAMP });
+        await fbDB.ref('coaches/' + authUid).set(coachId);
+      },
+      removeCoachDevice: async (targetUid) => {
+        if (!fbDB || !targetUid) return;
+        // coaches と coachClaims は同時削除必須 — coaches だけ消えて claim が残ると、
+        // 解除した端末が現PINを知らなくても自己再承認できてしまう
+        return fbDB.ref().update({
+          ['coaches/' + targetUid]: null,
+          ['coachClaims/' + targetUid]: null
+        });
+      },
       // ----- LAB（自主練ラボ）: 本人の試合カード（/lab/{uid}/matchCards・本人のみread・一回読み） -----
       getMyLabCards: async (uid) => {
         if (!fbDB || !uid) return [];
@@ -942,6 +977,15 @@
         return (await hashPinV2(pin, salt)) === stored;
       }
       return hashPin(pin) === stored; // 旧v1形式
+    }
+
+    // 顧問PIN（6桁・端末間共通）: 端末間で同一ハッシュが必要なため固定salt（形式 'c1:hex'）。
+    // 正誤判定はFirebaseルール側（coachClaims の .validate）。coachPins は読み取り不可のため
+    // オフライン総当たりはできない
+    async function hashCoachPin(pin) {
+      const data = new TextEncoder().encode('coachpin|' + String(pin) + '|handball-mental');
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      return 'c1:' + Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
     // ====== Helpers ======
@@ -1346,6 +1390,7 @@
                   allUsersData={allUsersData}
                   roster={roster}
                   rosterToUid={rosterToUid}
+                  coaches={coaches}
                   matches={matches}
                   autoImport={autoImport}
                   onToggleAutoImport={(v) => { setAutoImport(v); localStorage.setItem('mental_auto_import', v ? '1' : '0'); }}
@@ -1379,6 +1424,15 @@
       const [coachMode, setCoachMode] = useState(false); // 顧問として登録するか
       const [playerMode, setPlayerMode] = useState(true); // 初期は選手画面（顧問は下部ボタンから）
       const [coachName, setCoachName] = useState('');
+      // 顧問ディレクトリ（PINログイン用の名前一覧）
+      const [coachNames, setCoachNames] = useState({});
+      const [selectedCoachId, setSelectedCoachId] = useState(null);
+      const [coachPin, setCoachPin] = useState('');
+      // 認証前に購読すると permission_denied で購読が死んだままになるため authUid を待つ
+      useEffect(() => {
+        if (!authUid) return;
+        return storage.subscribeCoachNames(setCoachNames);
+      }, [authUid]);
 
       // 名簿リスト（active && 未連携優先）
       const rosterList = useMemo(() => {
@@ -1449,6 +1503,28 @@
         try { await onLogin(user); } finally { setBusy(false); }
       };
 
+      // 登録済み顧問のPINログイン（新端末の自己承認）。PIN正誤はFirebaseルールが判定する
+      const handleCoachPinLogin = async () => {
+        if (!selectedCoachId || coachPin.length !== 6) return;
+        setBusy(true);
+        try {
+          let myUid2 = authUid;
+          if (!myUid2 && fbAuth) myUid2 = (await fbAuth.signInAnonymously()).user.uid;
+          const hash = await hashCoachPin(coachPin);
+          await storage.claimCoach(myUid2, selectedCoachId, hash);
+          // 端末PINも同じ6桁で保存（次回この端末では同じPINで開ける）
+          localStorage.setItem(PIN_KEY, await hashPinV2(coachPin));
+          localStorage.setItem(NAME_KEY, coachNames[selectedCoachId] || '顧問');
+          await onLogin({
+            id: myUid2, name: coachNames[selectedCoachId] || '顧問', grade: 0,
+            position: '顧問', rosterId: null, createdAt: Date.now(), isCoach: true
+          });
+        } catch (e) {
+          console.warn('[coach pin login]', e);
+          alert('ログインできませんでした。PINが違うか、通信エラーです。');
+        } finally { setBusy(false); }
+      };
+
       const handleLogin = async () => {
         const ok = await verifyPin(pin, savedPin);
         if (!ok) {
@@ -1490,7 +1566,7 @@
                   type="password"
                   inputMode="numeric"
                   pattern="[0-9]*"
-                  maxLength="4"
+                  maxLength="6"
                   className="pin-input"
                   value={pin}
                   onChange={e => setPin(e.target.value.replace(/[^0-9]/g, ''))}
@@ -1530,7 +1606,7 @@
               </button>
               <p className="text-small text-muted" style={{textAlign:'center', marginTop:20, lineHeight:1.6}}>
                 選手 → 名簿から自分を選んでPIN設定<br/>
-                顧問 → 名前とPINで登録（承認制）
+                顧問 → 一覧から選んでPIN、初回のみ新規登録
               </p>
             </div>
           </div>
@@ -1543,8 +1619,30 @@
           <div className="login">
             <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
             <p className="subtitle">顧問・コーチ登録</p>
+            {Object.keys(coachNames).length > 0 && (
+              <div className="login-card" style={{marginBottom:12}}>
+                <h2>登録済み顧問でログイン</h2>
+                <div className="chip-group" style={{flexWrap:'wrap', marginBottom:12}}>
+                  {Object.entries(coachNames).map(([cid, nm]) => (
+                    <div key={cid} className={'chip ' + (selectedCoachId === cid ? 'selected' : '')} onClick={() => setSelectedCoachId(cid)}>{nm}</div>
+                  ))}
+                </div>
+                {selectedCoachId && (
+                  <>
+                    <div className="form-group">
+                      <label>顧問PIN（6桁）</label>
+                      <input type="password" inputMode="numeric" pattern="[0-9]*" maxLength="6" className="pin-input"
+                        value={coachPin} onChange={e => setCoachPin(e.target.value.replace(/[^0-9]/g, ''))} placeholder="••••••" />
+                    </div>
+                    <button className="btn" disabled={busy || coachPin.length !== 6} onClick={handleCoachPinLogin}>
+                      {busy ? '確認中...' : 'PINでログイン'}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             <div className="login-card">
-              <h2>顧問として登録</h2>
+              <h2>新しく顧問登録（初回のみ）</h2>
               <div className="form-group">
                 <label>お名前</label>
                 <input value={coachName} onChange={e => setCoachName(e.target.value)} placeholder="例: 山田先生" />
@@ -3376,6 +3474,94 @@
       );
     }
 
+    // ====== 顧問リスト管理（PINログイン用ディレクトリ） ======
+    function CoachDirectory({ coaches, myUid, showToast, onBack }) {
+      const [names, setNames] = useState({});
+      const [name, setName] = useState('');
+      const [dirPin, setDirPin] = useState('');
+      const [editingId, setEditingId] = useState(null); // PIN変更対象の coachId
+      const [busy, setBusy] = useState(false);
+      useEffect(() => {
+        if (!myUid) return;
+        return storage.subscribeCoachNames(setNames);
+      }, [myUid]);
+
+      const save = async () => {
+        if (!name.trim()) { alert('名前を入力してください'); return; }
+        if (!/^\d{6}$/.test(dirPin)) { alert('顧問PINは6桁の数字で設定してください'); return; }
+        setBusy(true);
+        try {
+          const id = editingId || window.fbDB.ref('coachNames').push().key;
+          await storage.upsertCoachEntry(id, name.trim(), await hashCoachPin(dirPin));
+          setName(''); setDirPin(''); setEditingId(null);
+          showToast(editingId ? 'PINを更新しました' : '登録しました');
+        } catch (e) { console.warn('[coachDir]', e); alert('保存できませんでした: ' + e.message); }
+        finally { setBusy(false); }
+      };
+
+      const remove = async (id, nm) => {
+        if (!confirm(`「${nm}」を顧問リストから削除しますか？\n（この名前でのPINログインができなくなります。承認済み端末はそのまま残ります）`)) return;
+        try { await storage.removeCoachEntry(id); showToast('削除しました'); }
+        catch (e) { alert('削除できませんでした: ' + e.message); }
+      };
+
+      // 承認済み端末（/coaches）。値がcoachIdならPINログイン由来、true はConsole手動登録
+      const devices = Object.entries(coaches || {});
+      const unlinkDevice = async (uid2) => {
+        const mine = uid2 === myUid;
+        if (!confirm((mine ? '⚠ これは今使っている端末です。解除すると顧問機能が使えなくなります。\n' : '') + 'この端末の顧問承認を解除しますか？')) return;
+        try { await storage.removeCoachDevice(uid2); showToast('解除しました'); }
+        catch (e) { alert('解除できませんでした: ' + e.message); }
+      };
+
+      return (
+        <>
+          <button className="btn-ghost mb-16" onClick={onBack}>← 顧問Dashboardに戻る</button>
+          <div className="section-h">顧問リスト（PINログイン）</div>
+          <div className="card">
+            <div className="card-subtitle" style={{lineHeight:1.7}}>
+              ここに登録した顧問は、新しい端末でもログイン画面の一覧から名前を選び、顧問PIN(6桁)を入れるだけで使い始められます（Firebase Consoleでの登録は不要になります）。
+            </div>
+          </div>
+          {Object.entries(names).map(([id, nm]) => (
+            <div key={id} className="list-item">
+              <div><div className="title">{nm}</div></div>
+              <div className="right" style={{display:'flex', gap:6}}>
+                <button className="btn-ghost" style={{padding:'6px 10px', fontSize:12}} onClick={() => { setEditingId(id); setName(nm); setDirPin(''); }}>PIN変更</button>
+                <button className="btn-ghost" style={{padding:'6px 10px', fontSize:12}} onClick={() => remove(id, nm)}>削除</button>
+              </div>
+            </div>
+          ))}
+          <div className="card mt-16">
+            <div className="card-title">{editingId ? `PIN変更: ${names[editingId] || ''}` : '＋ 顧問を追加'}</div>
+            <div className="form-group">
+              <label>名前</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="例: 山田" disabled={!!editingId} />
+            </div>
+            <div className="form-group">
+              <label>顧問PIN（6桁・端末をまたぐ本人確認用）</label>
+              <input type="password" inputMode="numeric" pattern="[0-9]*" maxLength="6" className="pin-input"
+                value={dirPin} onChange={e => setDirPin(e.target.value.replace(/[^0-9]/g, ''))} placeholder="••••••" />
+            </div>
+            <div style={{display:'flex', gap:8}}>
+              {editingId && <button className="btn btn-secondary" style={{flex:1}} onClick={() => { setEditingId(null); setName(''); setDirPin(''); }}>キャンセル</button>}
+              <button className="btn" style={{flex:1}} disabled={busy} onClick={save}>{busy ? '保存中...' : (editingId ? 'PINを更新' : '登録')}</button>
+            </div>
+          </div>
+          <div className="card mt-16">
+            <div className="card-title">承認済み端末 {devices.length}台</div>
+            <div className="card-subtitle">解除するとその端末は顧問機能を使えなくなります（復旧の最終手段はFirebase Console）。</div>
+            {devices.map(([uid2, v]) => (
+              <div key={uid2} className="stat-row">
+                <span className="label">{typeof v === 'string' ? (names[v] || '(削除済み顧問)') : 'Console登録'}{uid2 === myUid ? '（この端末）' : ''}</span>
+                <span className="value"><button className="btn-ghost" style={{padding:'4px 8px', fontSize:12}} onClick={() => unlinkDevice(uid2)}>解除</button></span>
+              </div>
+            ))}
+          </div>
+        </>
+      );
+    }
+
     // ====== 顧問承認待ち画面 ======
     function CoachApprovalPending({ myUid, showToast }) {
       const copyUid = () => {
@@ -3432,9 +3618,28 @@
     }
 
     // ====== Coach Dashboard (P2: 全選手データを Firebase RTDB から購読) ======
-    function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, autoImport, onToggleAutoImport, importMatch, isApprovedCoach, myUid, showToast, team, saveTeam, onNav }) {
+    function CoachDashboard({ state, allUsersData, roster, rosterToUid, coaches, matches, autoImport, onToggleAutoImport, importMatch, isApprovedCoach, myUid, showToast, team, saveTeam, onNav }) {
       const [selected, setSelected] = useState(null);
       const [tab, setTab] = useState('overview'); // overview / roster / csv / cloud
+      const [teamLab, setTeamLab] = useState(null); // null | 'loading' | {uid: pct|null}
+
+      // LAB読み的中率をオンデマンドで全員分読む（Task 3 のルールでコーチ読取可）
+      const loadTeamLab = async () => {
+        setTeamLab('loading');
+        const out = {};
+        for (const p of players) {
+          try {
+            const cards = await storage.getMyLabCards(p.uid);
+            let n = 0, h = 0;
+            cards.forEach(c => {
+              const ys = Array.isArray(c && c.yomi) ? c.yomi : Object.values((c && c.yomi) || {});
+              ys.forEach(y => { if (y && (y.hit === true || y.hit === false)) { n++; if (y.hit === true) h++; } });
+            });
+            out[p.uid] = n > 0 ? Math.round(h / n * 100) : null;
+          } catch (e) { console.debug('[team lab]', p.uid, e); out[p.uid] = null; }
+        }
+        setTeamLab(out);
+      };
 
       // 未取込のクラウド試合数（バッジ用）
       const pendingMatchCount = Object.values(matches || {}).filter(m => m && !m.importedAt).length;
@@ -3566,10 +3771,13 @@
         return <RosterManagement roster={roster} rosterToUid={rosterToUid} allUsersData={allUsersData} showToast={showToast} onBack={() => setTab('overview')} />;
       }
       if (tab === 'csv') {
-        return <CsvImport roster={roster} rosterToUid={rosterToUid} showToast={showToast} onBack={() => setTab('overview')} />;
+        return <CsvImport roster={roster} rosterToUid={rosterToUid} matches={matches} showToast={showToast} onBack={() => setTab('overview')} />;
       }
       if (tab === 'cloud') {
         return <CloudMatches matches={matches} roster={roster} rosterToUid={rosterToUid} autoImport={autoImport} onToggleAutoImport={onToggleAutoImport} importMatch={importMatch} showToast={showToast} onBack={() => setTab('overview')} />;
+      }
+      if (tab === 'coachdir') {
+        return <CoachDirectory coaches={coaches} myUid={myUid} showToast={showToast} onBack={() => setTab('overview')} />;
       }
 
       return (
@@ -3583,6 +3791,7 @@
               {pendingMatchCount > 0 && <span style={{position:'absolute', top:-6, right:-6, background:'var(--warning)', color:'#000', borderRadius:10, fontSize:11, fontWeight:'bold', padding:'2px 7px'}}>{pendingMatchCount}</span>}
             </button>
             <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => setTab('csv')}>📥 CSVファイル取込</button>
+            <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => setTab('coachdir')}>👤 顧問リスト</button>
             <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => onNav && onNav('physadmin')}>💪 フィジカル入力</button>
           </div>
 
@@ -3606,6 +3815,32 @@
               </div>
             </div>
           </div>
+
+          {/* チーム成績一覧（試合データ累計。タップで個人詳細へ） */}
+          {players.some(p => p.statsGames && p.statsGames.length > 0) && (
+            <div className="card mt-16">
+              <div className="card-title">📊 チーム成績（累計）</div>
+              <div className="card-subtitle">決定率 = ゴール÷シュート（TO除く）。GKはセーブ率。タップで個人詳細。</div>
+              {players
+                .filter(p => p.statsGames && p.statsGames.length > 0)
+                .sort((a, b) => b.statsTotal.goals - a.statsTotal.goals)
+                .map(p => (
+                  <div key={p.uid} className="stat-row" onClick={() => setSelected(p)} style={{cursor:'pointer'}}>
+                    <span className="label">{p.profile.name}</span>
+                    <span className="value">
+                      {p.statsTotal.faced > 0
+                        ? `🧤 ${p.statsTotal.saves}SV/枠内${p.statsTotal.faced} (${p.statsTotal.saveRate}%)`
+                        : `${p.statsTotal.goals}G/${p.statsTotal.shots}S (${p.statsTotal.goalRate}%)`}
+                      {p.statsTotal.turnovers > 0 ? ` TO${p.statsTotal.turnovers}` : ''}
+                      {teamLab && teamLab !== 'loading' && teamLab[p.uid] != null ? ` ・読み${teamLab[p.uid]}%` : ''}
+                    </span>
+                  </div>
+                ))}
+              <button className="btn-ghost mt-16" style={{width:'100%'}} disabled={teamLab === 'loading'} onClick={loadTeamLab}>
+                {teamLab === 'loading' ? '読込中...' : (teamLab ? '🔄 LAB読み的中率を再読込' : '🧪 LAB読み的中率も表示')}
+              </button>
+            </div>
+          )}
 
           {/* 今週の気になる選手（自動トリアージ） */}
           {triage.rows.length > 0 && (
@@ -3733,6 +3968,29 @@
     // ====== Player Detail (顧問が個別選手の詳細を見る) ======
     function PlayerDetail({ player, onBack, showToast }) {
       const p = player;
+      const [lab, setLab] = useState(null); // null | 'loading' | {yomi, gkPred, pv}
+      const loadLab = async () => {
+        setLab('loading');
+        try {
+          const [cards, gkRecs, pvRecs] = await Promise.all([
+            storage.getMyLabCards(p.uid),
+            storage.getMyLabNode(p.uid, 'gkPredictions'),
+            storage.getMyLabNode(p.uid, 'pvRecords')
+          ]);
+          let yn = 0, yh = 0;
+          cards.forEach(c => {
+            const ys = Array.isArray(c && c.yomi) ? c.yomi : Object.values((c && c.yomi) || {});
+            ys.forEach(y => { if (y && (y.hit === true || y.hit === false)) { yn++; if (y.hit === true) yh++; } });
+          });
+          let gn = 0, gh = 0;
+          gkRecs.forEach(r => { if (r && (r.hit === true || r.hit === false)) { gn++; if (r.hit === true) gh++; } });
+          setLab({
+            yomi: yn > 0 ? { n: yn, h: yh, pct: Math.round(yh / yn * 100) } : null,
+            gkPred: gn > 0 ? { n: gn, h: gh, pct: Math.round(gh / gn * 100) } : null,
+            pv: pvRecs.filter(Boolean).length
+          });
+        } catch (e) { console.debug('[coach lab detail]', e); setLab({ yomi: null, gkPred: null, pv: 0 }); }
+      };
       return (
         <>
           <button className="btn-ghost mb-16" onClick={onBack}>← 選手一覧に戻る</button>
@@ -3810,6 +4068,21 @@
               ))}
             </>
           )}
+
+          {/* LAB指標（オンデマンド読込。ルールでコーチ読取可） */}
+          <div className="card mt-16">
+            <div className="card-title">🧪 LAB指標</div>
+            {!lab && <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={loadLab}>読み・GK予測・PV認知を読み込む</button>}
+            {lab === 'loading' && <div className="card-subtitle">読込中...</div>}
+            {lab && lab !== 'loading' && (
+              <>
+                {lab.yomi && <div className="stat-row"><span className="label">🔮 読み的中率</span><span className="value">{lab.yomi.pct}%（{lab.yomi.h}/{lab.yomi.n}件）</span></div>}
+                {lab.gkPred && <div className="stat-row"><span className="label">🧤 GK予測的中率</span><span className="value">{lab.gkPred.pct}%（{lab.gkPred.h}/{lab.gkPred.n}本）</span></div>}
+                {lab.pv > 0 && <div className="stat-row"><span className="label">🎯 PV認知記録</span><span className="value">{lab.pv} 件</span></div>}
+                {!lab.yomi && !lab.gkPred && lab.pv === 0 && <div className="card-subtitle">LABの記録がまだありません（LAB未接続の選手は出ません）</div>}
+              </>
+            )}
+          </div>
 
           {p.sessionWorks && Object.keys(p.sessionWorks).length > 0 && (
             <>
@@ -4917,6 +5190,32 @@
       );
     }
 
+    // ====== 名簿の重複グループ（統合先の選択と実行ボタン） ======
+    function DupGroup({ group, rosterToUid, onMerge }) {
+      // 提案はマウント時のみ採用（useStateの初期値）— 名簿更新でコーチの選択を上書きしない
+      const suggested = HMDedupe.planMerge(group, rosterToUid).canonicalId;
+      const [canonicalId, setCanonicalId] = useState(suggested);
+      const [busy, setBusy] = useState(false);
+      return (
+        <div style={{marginTop:12, paddingTop:12, borderTop:'1px solid rgba(255,255,255,0.08)'}}>
+          {group.entries.map(e => (
+            <label key={e.id} style={{display:'flex', alignItems:'center', gap:8, padding:'4px 0', cursor:'pointer'}}>
+              <input type="radio" name={'dup-' + group.key} checked={canonicalId === e.id} onChange={() => setCanonicalId(e.id)} />
+              <span>
+                {rosterDisplayName(e)}（{e.enrollmentYear}年入学{e.active === false ? '・引退' : ''}）
+                {rosterToUid && rosterToUid[e.id]
+                  ? <span style={{color:'var(--accent)'}}> ✓ 端末連携あり</span>
+                  : <span className="text-muted"> 連携なし</span>}
+              </span>
+            </label>
+          ))}
+          <button className="btn-ghost mt-16" disabled={busy} onClick={async () => { setBusy(true); try { await onMerge(group, canonicalId); } finally { setBusy(false); } }}>
+            {busy ? '統合中...' : `選択した行に統合（他 ${group.entries.length - 1} 行を削除）`}
+          </button>
+        </div>
+      );
+    }
+
     // ====== Roster Management (顧問用) ======
     function RosterManagement({ roster, rosterToUid, allUsersData, showToast, onBack }) {
       const [editing, setEditing] = useState(null); // {id, ...data} or 'new'
@@ -4944,23 +5243,63 @@
 
       const linkedCount = entries.filter(e => rosterToUid && rosterToUid[e.id]).length;
 
+      // 重複（同姓＋同入学年度）の検出と統合
+      const dupGroups = useMemo(() => HMDedupe.findRosterDuplicates(roster), [roster]);
+
+      const executeMerge = async (group, canonicalId) => {
+        const plan = HMDedupe.planMerge(group, rosterToUid, canonicalId);
+        const canonical = group.entries.find(e => e.id === plan.canonicalId);
+        const lines = [`「${rosterDisplayName(canonical)}${canonical.active === false ? '（引退）' : ''}」に統合します。`, `削除される重複行: ${plan.deleteIds.length}件`];
+        if (plan.moveUid) lines.push('端末連携を統合先に引き継ぎます。');
+        if (plan.conflict) lines.push('⚠ 複数の行が別々の端末に連携済みです。統合先以外の連携は解除され、その端末は次回ログインで名簿から選び直しになります（配信済み試合データは「クラウド試合取込」の再配信で復元できます）。また、解除された選手のLAB連携も切れるため、その選手はLABアプリで名前を選び直す必要があります。');
+        if (!confirm(lines.join('\n'))) return;
+        try {
+          if (plan.moveUid) await storage.linkRosterToUid(plan.canonicalId, plan.moveUid);
+          for (const id of plan.unlinkIds) {
+            // uid を引き継ぐ場合は LAB ブリッジ(labLinks)の rosterId も統合先へ付替え（失敗しても続行）
+            const uid = rosterToUid[id];
+            if (uid && plan.moveUid === uid) {
+              try {
+                const snap = await window.fbDB.ref('labLinks/' + uid).get();
+                const link = snap.val();
+                if (link && link.rosterId === id) {
+                  await window.fbDB.ref('labLinks/' + uid + '/rosterId').set(plan.canonicalId);
+                }
+              } catch (e) { console.warn('[merge labLinks]', e); }
+            }
+            await storage.unlinkRoster(id);
+          }
+          for (const id of plan.deleteIds) await storage.deleteRoster(id);
+          showToast(`統合しました（${plan.deleteIds.length}行を削除）`);
+        } catch (e) {
+          console.error('[merge]', e);
+          alert('統合中にエラー: ' + e.message + '\n途中まで実行された可能性があります。重複チェックの表示を確認してください。');
+        }
+      };
+
       const seedDefault = async () => {
         const defaults = makeDefaultRosterEntries();
-        if (Object.keys(roster).length > 0) {
-          if (!confirm(`既に ${Object.keys(roster).length} 名登録されています。デフォルト${defaults.length}名（1・2年）を追加で投入しますか？`)) return;
-        } else {
-          if (!confirm(`analyzer デフォルトの${defaults.length}名（1・2年）を投入しますか？`)) return;
-        }
+        // 既存（同姓＋同入学年度）はスキップして未登録分だけ投入 — 二度押しで複製しない
+        const existing = new Set(Object.values(roster || {}).map(r => HMDedupe.dupKey(r)));
+        const missing = defaults.filter(d => !existing.has(HMDedupe.dupKey(d)));
+        if (missing.length === 0) { showToast('デフォルト名簿は投入済みです（追加なし）'); return; }
+        if (!confirm(`デフォルト${defaults.length}名のうち未登録の${missing.length}名を投入しますか？\n（登録済みの${defaults.length - missing.length}名はスキップ）`)) return;
         const fbDB = window.fbDB;
-        for (const entry of defaults) {
+        for (const entry of missing) {
           const newId = fbDB.ref('roster').push().key;
           await storage.upsertRoster(newId, entry);
         }
-        showToast(`${defaults.length}名を投入しました`);
+        showToast(`${missing.length}名を投入しました`);
       };
 
       const save = async (data) => {
         const fbDB = window.fbDB;
+        // 新規追加のみ: 同姓＋同入学年度の既存行があれば警告（意図的な同姓別人の追加は続行可）
+        if (!editing.id) {
+          const key = HMDedupe.dupKey({ surname: data.surname, enrollmentYear: Number(data.enrollmentYear) });
+          const dup = Object.values(roster || {}).find(r => r && HMDedupe.dupKey(r) === key);
+          if (dup && !confirm(`同じ姓・同じ入学年度の「${rosterDisplayName(dup)}${dup.active === false ? '（引退）' : ''}」が既に登録されています。\n同一人物なら追加せず、既存の行を使ってください。\n\n別人として追加しますか？`)) return;
+        }
         const id = editing.id || fbDB.ref('roster').push().key;
         await storage.upsertRoster(id, {
           surname: data.surname,
@@ -5008,6 +5347,16 @@
         <>
           <button className="btn-ghost mb-16" onClick={onBack}>← 顧問Dashboardに戻る</button>
           <div className="section-h">名簿管理 <span className="small">{entries.length}名 / mental連携 {linkedCount}名</span></div>
+
+          {dupGroups.length > 0 && (
+            <div className="card" style={{borderLeft:'3px solid var(--warning)', marginBottom:16}}>
+              <div className="card-title">⚠ 名簿の重複 {dupGroups.length}組</div>
+              <div className="card-subtitle">同じ姓・同じ入学年度の行が複数あります。放置すると試合データが正しく配信されません（同姓でも学年が違うのは別人なのでここには出ません）。</div>
+              {dupGroups.map(group => (
+                <DupGroup key={group.key} group={group} rosterToUid={rosterToUid} onMerge={executeMerge} />
+              ))}
+            </div>
+          )}
 
           {entries.length === 0 && (
             <div className="card">
@@ -5302,98 +5651,118 @@
     }
 
     // ====== CSV Import (analyzer出力CSV取込) ======
-    function CsvImport({ roster, rosterToUid, showToast, onBack }) {
-      const [parsed, setParsed] = useState(null); // {headers, rows}
-      const [stats, setStats] = useState(null);    // {matched, unmatched, byPlayer}
+    // 解決ロジックは lib/dedupe.js（resolveCsvRows）。守備行はGKに配信・複数試合対応・
+    // 未一致名はコーチが手動対応付け（全て解決するまで確定ボタン無効 = 黙って捨てない）
+    function CsvImport({ roster, rosterToUid, matches, showToast, onBack }) {
+      const [rows, setRows] = useState(null);          // パース済み全行
+      const [manualMap, setManualMap] = useState({});  // {名前: rosterId|'skip'}
       const [busy, setBusy] = useState(false);
+
+      // 表示名＋（チーム内で一意な正規化姓）→ rosterId。引退選手も含める（過去CSVのため）
+      const nameToRid = useMemo(() => {
+        const map = {};
+        const bareCount = {};
+        Object.entries(roster || {}).forEach(([rid, r]) => {
+          if (!r) return;
+          map[rosterDisplayName(r)] = rid;
+          const bare = HMDedupe.normalizeSurname(r.surname);
+          bareCount[bare] = (bareCount[bare] || 0) + 1;
+        });
+        Object.entries(roster || {}).forEach(([rid, r]) => {
+          if (!r) return;
+          const bare = HMDedupe.normalizeSurname(r.surname);
+          if (bareCount[bare] === 1) map[bare] = rid; // 姓が一意なときだけ姓でも引ける
+        });
+        return map;
+      }, [roster]);
+
+      const resolution = useMemo(
+        () => rows ? HMDedupe.resolveCsvRows(rows, nameToRid, manualMap) : null,
+        [rows, nameToRid, manualMap]);
+
+      // クラウド取込済みの試合（同じ 日付_相手）を検知 — 二重計上防止のため既定で除外
+      const cloudDupIds = useMemo(() => {
+        const s = new Set();
+        Object.values(matches || {}).forEach(m => {
+          if (m && m.importedAt) s.add(HMDedupe.csvGameId({ date: m.date, opponent: m.opponent }));
+        });
+        return s;
+      }, [matches]);
+      const [excluded, setExcluded] = useState({}); // {gameId: bool} 明示切替。未設定はcloudDupIdsに従う
+      const isExcluded = (gid) => excluded[gid] !== undefined ? excluded[gid] : cloudDupIds.has(gid);
 
       const onFile = async (file) => {
         if (!file) return;
         const text = await file.text();
-        // BOMを除去
         const clean = text.replace(/^﻿/, '');
         const lines = clean.split(/\r?\n/).filter(Boolean);
-        if (lines.length < 2) {
-          alert('データ行がありません');
+        if (lines.length < 2) { alert('データ行がありません'); return; }
+        const headers = parseCsvLine(lines[0]);
+        if (!headers.includes('player') || !headers.includes('result')) {
+          alert('analyzer出力CSVではないようです（player / result 列が見つかりません）');
           return;
         }
-        const headers = parseCsvLine(lines[0]);
-        const rows = lines.slice(1).map(l => {
+        setRows(lines.slice(1).map(l => {
           const cells = parseCsvLine(l);
           const row = {};
           headers.forEach((h, i) => row[h] = cells[i] || '');
           return row;
-        });
-        // analyzer の player列 → rosterId 逆引き
-        const nameToRosterId = {};
-        for (const [rid, r] of Object.entries(roster || {})) {
-          nameToRosterId[rosterDisplayName(r)] = rid;
-        }
-        let matched = 0, unmatched = 0;
-        const byPlayer = {};
-        const unmatchedNames = new Set();
-        rows.forEach(r => {
-          const name = r.player;
-          if (!name) return;
-          const rid = nameToRosterId[name];
-          if (rid) {
-            matched++;
-            byPlayer[name] = (byPlayer[name] || 0) + 1;
-            r._rosterId = rid;
-            r._uid = (rosterToUid || {})[rid];
-          } else {
-            unmatched++;
-            unmatchedNames.add(name);
-            r._rosterId = null;
-            r._uid = null;
-          }
-        });
-        setParsed({ headers, rows });
-        setStats({ matched, unmatched, byPlayer, unmatchedNames: Array.from(unmatchedNames) });
+        }));
+        setManualMap({});
+        setExcluded({});
       };
 
       const commit = async () => {
-        if (!parsed) return;
+        if (!resolution) return;
+        const games = Object.entries(resolution.byGame).filter(([gid]) => !isExcluded(gid));
+        if (games.length === 0) { alert('取り込む試合がありません（すべて除外されています）'); return; }
+        if (!confirm(`${games.length}試合を配信します。\n同じ試合ID（日付_相手）は、この試合に含まれる選手の分だけ上書きされます。よろしいですか？`)) return;
         setBusy(true);
+        let savedPlayers = 0;
+        const skippedNames = new Set();
         try {
-          const gameDate = (parsed.rows[0] && parsed.rows[0].date) || todayStr();
-          const opponent = (parsed.rows[0] && parsed.rows[0].opponent) || 'unknown';
-          const gameId = gameDate + '_' + opponent.replace(/[^a-zA-Z0-9一-龯ぁ-んァ-ヶ]/g, '');
-          let saved = 0;
-          for (let i = 0; i < parsed.rows.length; i++) {
-            const r = parsed.rows[i];
-            if (!r._uid) continue;
-            const row = { ...r };
-            delete row._rosterId;
-            delete row._uid;
-            await storage.saveGameStats(r._uid, gameId, i, row);
-            saved++;
+          for (const [gameId, g] of games) {
+            for (const [rid, ridRows] of Object.entries(g.byRid)) {
+              const uid = (rosterToUid || {})[rid];
+              if (!uid) {
+                const r = roster[rid];
+                skippedNames.add(r ? rosterDisplayName(r) : rid);
+                continue;
+              }
+              const rowsObj = {};
+              ridRows.forEach((row, i) => { rowsObj[i] = row; });
+              await storage.saveGameStatsBulk(uid, gameId, rowsObj); // set() = 同一試合はまるごと置換
+              savedPlayers++;
+            }
           }
-          showToast(`${saved}行を保存しました（試合: ${gameId}）`);
-          setParsed(null);
-          setStats(null);
+          let msg = `✅ ${games.length}試合を配信（延べ${savedPlayers}名分）`;
+          if (skippedNames.size > 0) msg += `\n⚠ mental未連携でスキップ: ${Array.from(skippedNames).join('・')}\n（選手がログインで連携したあと、同じCSVを再取込してください）`;
+          alert(msg);
+          setRows(null); setManualMap({}); setExcluded({});
         } catch (e) {
           console.error(e);
-          alert('保存中にエラー: ' + e.message);
+          alert('保存中にエラー: ' + e.message + '\nここまでに延べ' + savedPlayers + '名分を保存済みです。同じCSVを再取込すれば安全に上書きで続行できます。');
         } finally {
           setBusy(false);
         }
       };
+
+      const unresolvedCount = resolution ? resolution.unmatched.filter(n => !manualMap[n]).length : 0;
 
       return (
         <>
           <button className="btn-ghost mb-16" onClick={onBack}>← 顧問Dashboardに戻る</button>
           <div className="section-h">CSV取込（analyzer出力）</div>
 
-          {!parsed && (
+          {!rows && (
             <>
               <div className="card">
                 <div className="card-title">使い方</div>
                 <div className="card-subtitle" style={{lineHeight:1.7}}>
                   1. handball-analyzer で試合データをCSVエクスポート<br/>
-                  2. このページでCSVファイルを選択<br/>
-                  3. プレビュー確認 → 確定<br/>
-                  4. 各選手のアプリに自動配信
+                  2. このページでCSVファイルを選択（複数試合が混ざったCSVもOK）<br/>
+                  3. プレビューで紐付けを確認 → 確定<br/>
+                  4. 各選手のマイ統計に配信（GKのセーブ率も入ります）
                 </div>
               </div>
               <div className="card mt-16">
@@ -5406,40 +5775,69 @@
             </>
           )}
 
-          {parsed && stats && (
+          {resolution && (
             <>
               <div className="card">
                 <div className="card-title">プレビュー</div>
                 <div className="summary-stats" style={{marginTop:12}}>
-                  <div className="stat-card"><div className="num">{parsed.rows.length}</div><div className="label">総行数</div></div>
-                  <div className="stat-card"><div className="num" style={{color:'var(--success)'}}>{stats.matched}</div><div className="label">紐付OK</div></div>
-                  <div className="stat-card"><div className="num" style={{color:'var(--warning)'}}>{stats.unmatched}</div><div className="label">未紐付</div></div>
+                  <div className="stat-card"><div className="num">{Object.keys(resolution.byGame).length}</div><div className="label">試合</div></div>
+                  <div className="stat-card"><div className="num" style={{color:'var(--success)'}}>{resolution.matchedRows}</div><div className="label">紐付OK行</div></div>
+                  <div className="stat-card"><div className="num" style={{color: resolution.unmatched.length ? 'var(--warning)' : 'var(--text-3)'}}>{resolution.unmatched.length}</div><div className="label">要対応の名前</div></div>
                 </div>
               </div>
 
-              {stats.unmatched > 0 && (
+              {resolution.unmatched.length > 0 && (
                 <div className="card mt-16" style={{borderLeft:'3px solid var(--warning)'}}>
-                  <div className="card-title">⚠ 名簿にない選手</div>
-                  <div className="card-subtitle">この選手の行は保存されません。名簿管理で追加してから再実行してください。</div>
-                  <ul style={{marginTop:8}}>
-                    {stats.unmatchedNames.map(n => <li key={n}>{n}</li>)}
-                  </ul>
+                  <div className="card-title">⚠ 名簿と一致しない名前</div>
+                  <div className="card-subtitle">名簿の選手を指定するか「取り込まない」を選んでください（全部決めるまで確定できません）。</div>
+                  {resolution.unmatched.map(n => (
+                    <div key={n} className="stat-row">
+                      <span className="label">{n}</span>
+                      <select value={manualMap[n] || ''} onChange={e => setManualMap({ ...manualMap, [n]: e.target.value })}>
+                        <option value="">（未選択）</option>
+                        <option value="skip">取り込まない</option>
+                        {Object.entries(roster || {}).map(([rid, r]) => (
+                          <option key={rid} value={rid}>{rosterDisplayName(r)}{r.active === false ? '（引退）' : ''}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
                 </div>
               )}
 
-              <div className="section-h mt-16">選手別 行数</div>
-              {Object.entries(stats.byPlayer).map(([name, cnt]) => (
-                <div key={name} className="list-item">
-                  <div>
-                    <div className="title">{name}</div>
-                    <div className="sub">{cnt} 行</div>
+              <div className="section-h mt-16">試合別の配信先</div>
+              {Object.entries(resolution.byGame).map(([gameId, g]) => (
+                <div key={gameId} className="card" style={{marginBottom:12}}>
+                  <div className="card-title">{gameId}</div>
+                  <div className="card-subtitle" style={{lineHeight:1.8}}>
+                    {Object.entries(g.byRid).map(([rid, ridRows]) => {
+                      const r = roster[rid];
+                      const linked = (rosterToUid || {})[rid];
+                      return (
+                        <span key={rid} style={{marginRight:10, color: linked ? undefined : 'var(--warning)'}}>
+                          {r ? rosterDisplayName(r) : rid} {ridRows.length}行{linked ? '' : '（未連携→スキップ）'}
+                        </span>
+                      );
+                    })}
                   </div>
+                  {cloudDupIds.has(gameId) && (
+                    <div className="text-small" style={{color:'var(--warning)', marginTop:6}}>
+                      ⚠ クラウド取込済みの試合と同じ日付・相手です。二重に取り込むと成績が水増しされます。
+                    </div>
+                  )}
+                  <label style={{display:'flex', alignItems:'center', gap:8, marginTop:8, cursor:'pointer'}}>
+                    <input type="checkbox" checked={!isExcluded(gameId)}
+                      onChange={e => setExcluded({ ...excluded, [gameId]: !e.target.checked })} />
+                    <span className="text-small">この試合を取り込む</span>
+                  </label>
                 </div>
               ))}
 
               <div style={{display:'flex', gap:8, marginTop:16}}>
-                <button className="btn btn-secondary" style={{flex:1}} onClick={() => { setParsed(null); setStats(null); }}>キャンセル</button>
-                <button className="btn" style={{flex:1}} disabled={busy || stats.matched === 0} onClick={commit}>{busy ? '保存中...' : `確定（${stats.matched}行）`}</button>
+                <button className="btn btn-secondary" style={{flex:1}} onClick={() => { setRows(null); setManualMap({}); setExcluded({}); }}>キャンセル</button>
+                <button className="btn" style={{flex:1}} disabled={busy || resolution.matchedRows === 0 || unresolvedCount > 0 || Object.keys(resolution.byGame).every(gid => isExcluded(gid))} onClick={commit}>
+                  {busy ? '保存中...' : (unresolvedCount > 0 ? `未対応の名前が${unresolvedCount}件` : '確定して配信')}
+                </button>
               </div>
             </>
           )}
