@@ -3436,6 +3436,25 @@
     function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, autoImport, onToggleAutoImport, importMatch, isApprovedCoach, myUid, showToast, team, saveTeam, onNav }) {
       const [selected, setSelected] = useState(null);
       const [tab, setTab] = useState('overview'); // overview / roster / csv / cloud
+      const [teamLab, setTeamLab] = useState(null); // null | 'loading' | {uid: pct|null}
+
+      // LAB読み的中率をオンデマンドで全員分読む（Task 3 のルールでコーチ読取可）
+      const loadTeamLab = async () => {
+        setTeamLab('loading');
+        const out = {};
+        for (const p of players) {
+          try {
+            const cards = await storage.getMyLabCards(p.uid);
+            let n = 0, h = 0;
+            cards.forEach(c => {
+              const ys = Array.isArray(c && c.yomi) ? c.yomi : Object.values((c && c.yomi) || {});
+              ys.forEach(y => { if (y && (y.hit === true || y.hit === false)) { n++; if (y.hit === true) h++; } });
+            });
+            out[p.uid] = n > 0 ? Math.round(h / n * 100) : null;
+          } catch (e) { console.debug('[team lab]', p.uid, e); out[p.uid] = null; }
+        }
+        setTeamLab(out);
+      };
 
       // 未取込のクラウド試合数（バッジ用）
       const pendingMatchCount = Object.values(matches || {}).filter(m => m && !m.importedAt).length;
@@ -3607,6 +3626,32 @@
               </div>
             </div>
           </div>
+
+          {/* チーム成績一覧（試合データ累計。タップで個人詳細へ） */}
+          {players.some(p => p.statsGames && p.statsGames.length > 0) && (
+            <div className="card mt-16">
+              <div className="card-title">📊 チーム成績（累計）</div>
+              <div className="card-subtitle">決定率 = ゴール÷シュート（TO除く）。GKはセーブ率。タップで個人詳細。</div>
+              {players
+                .filter(p => p.statsGames && p.statsGames.length > 0)
+                .sort((a, b) => b.statsTotal.goals - a.statsTotal.goals)
+                .map(p => (
+                  <div key={p.uid} className="stat-row" onClick={() => setSelected(p)} style={{cursor:'pointer'}}>
+                    <span className="label">{p.profile.name}</span>
+                    <span className="value">
+                      {p.statsTotal.faced > 0
+                        ? `🧤 ${p.statsTotal.saves}SV/枠内${p.statsTotal.faced} (${p.statsTotal.saveRate}%)`
+                        : `${p.statsTotal.goals}G/${p.statsTotal.shots}S (${p.statsTotal.goalRate}%)`}
+                      {p.statsTotal.turnovers > 0 ? ` TO${p.statsTotal.turnovers}` : ''}
+                      {teamLab && teamLab !== 'loading' && teamLab[p.uid] != null ? ` ・読み${teamLab[p.uid]}%` : ''}
+                    </span>
+                  </div>
+                ))}
+              <button className="btn-ghost mt-16" style={{width:'100%'}} disabled={teamLab === 'loading'} onClick={loadTeamLab}>
+                {teamLab === 'loading' ? '読込中...' : (teamLab ? '🔄 LAB読み的中率を再読込' : '🧪 LAB読み的中率も表示')}
+              </button>
+            </div>
+          )}
 
           {/* 今週の気になる選手（自動トリアージ） */}
           {triage.rows.length > 0 && (
