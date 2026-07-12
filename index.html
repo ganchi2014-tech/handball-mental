@@ -4920,8 +4920,10 @@
 
     // ====== 名簿の重複グループ（統合先の選択と実行ボタン） ======
     function DupGroup({ group, rosterToUid, onMerge }) {
+      // 提案はマウント時のみ採用（useStateの初期値）— 名簿更新でコーチの選択を上書きしない
       const suggested = HMDedupe.planMerge(group, rosterToUid).canonicalId;
       const [canonicalId, setCanonicalId] = useState(suggested);
+      const [busy, setBusy] = useState(false);
       return (
         <div style={{marginTop:12, paddingTop:12, borderTop:'1px solid rgba(255,255,255,0.08)'}}>
           {group.entries.map(e => (
@@ -4935,8 +4937,8 @@
               </span>
             </label>
           ))}
-          <button className="btn-ghost mt-16" onClick={() => onMerge(group, canonicalId)}>
-            選択した行に統合（他 {group.entries.length - 1} 行を削除）
+          <button className="btn-ghost mt-16" disabled={busy} onClick={async () => { setBusy(true); try { await onMerge(group, canonicalId); } finally { setBusy(false); } }}>
+            {busy ? '統合中...' : `選択した行に統合（他 ${group.entries.length - 1} 行を削除）`}
           </button>
         </div>
       );
@@ -4975,9 +4977,9 @@
       const executeMerge = async (group, canonicalId) => {
         const plan = HMDedupe.planMerge(group, rosterToUid, canonicalId);
         const canonical = group.entries.find(e => e.id === plan.canonicalId);
-        const lines = [`「${rosterDisplayName(canonical)}」に統合します。`, `削除される重複行: ${plan.deleteIds.length}件`];
+        const lines = [`「${rosterDisplayName(canonical)}${canonical.active === false ? '（引退）' : ''}」に統合します。`, `削除される重複行: ${plan.deleteIds.length}件`];
         if (plan.moveUid) lines.push('端末連携を統合先に引き継ぎます。');
-        if (plan.conflict) lines.push('⚠ 複数の行が別々の端末に連携済みです。統合先以外の連携は解除され、その端末は次回ログインで名簿から選び直しになります（配信済み試合データは「クラウド試合取込」の再配信で復元できます）。');
+        if (plan.conflict) lines.push('⚠ 複数の行が別々の端末に連携済みです。統合先以外の連携は解除され、その端末は次回ログインで名簿から選び直しになります（配信済み試合データは「クラウド試合取込」の再配信で復元できます）。また、解除された選手のLAB連携も切れるため、その選手はLABアプリで名前を選び直す必要があります。');
         if (!confirm(lines.join('\n'))) return;
         try {
           if (plan.moveUid) await storage.linkRosterToUid(plan.canonicalId, plan.moveUid);

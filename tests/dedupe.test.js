@@ -116,5 +116,9 @@ t('不正なchosenCanonicalIdは無視して自動選択', () => {
   assert.strictEqual(p.canonicalId, 'b');
   assert.strictEqual(p.deleteIds.length, 2);
 });
+t('連携なしなら現役行を統合先に優先（引退行が先頭でも）', () => {
+  const g2 = { key: 'k', entries: [{ id: 'r1', active: false }, { id: 'r2' }, { id: 'r3', active: false }] };
+  assert.strictEqual(D.planMerge(g2, {}).canonicalId, 'r2');
+});
 
 console.log(`\n${passed} tests passed${process.exitCode ? ' (with failures)' : ''}`);
