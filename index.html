@@ -1511,6 +1511,18 @@
         try {
           let myUid2 = authUid;
           if (!myUid2 && fbAuth) myUid2 = (await fbAuth.signInAnonymously()).user.uid;
+          // 端末の使い回し対策: この端末の匿名uidが選手のデータと結びついている場合は顧問化を拒否
+          // （データ削除してもFirebaseの匿名uidは残るため、選手のクラウド記録を顧問stateで
+          //   上書きしてしまう事故を防ぐ。顧問は別ブラウザ/別端末を使えばよい）
+          const takenByPlayer = Object.values(rosterToUid || {}).includes(myUid2);
+          let existingUser = null;
+          if (!takenByPlayer && window.fbDB) {
+            try { existingUser = (await window.fbDB.ref('users/' + myUid2 + '/state/user').get()).val(); } catch (e) {}
+          }
+          if (takenByPlayer || (existingUser && !existingUser.isCoach)) {
+            alert('この端末は選手のデータと結びついているため、顧問PINログインはできません。\n顧問用には別の端末、または別のブラウザ（シークレットウィンドウ等）を使ってください。');
+            return;
+          }
           const hash = await hashCoachPin(coachPin);
           await storage.claimCoach(myUid2, selectedCoachId, hash);
           // 端末PINも同じ6桁で保存（次回この端末では同じPINで開ける）
@@ -2176,7 +2188,7 @@
             </button>
           </div>
 
-          {team && (team.theme || team.aikotoba || team.breathingRule || team.norms || team.tryNow || team.voiceNotes) && (
+          {team && (team.theme || team.aikotoba || team.breathingRule || team.norms || team.tryNow || Object.values(team.voiceNotes || {}).some(n => n && n.date === todayStr())) && (
             <>
               <div className="section-h">チームボード</div>
               <div className="card">
@@ -5771,7 +5783,9 @@
                   1. handball-analyzer で試合データをCSVエクスポート<br/>
                   2. このページでCSVファイルを選択（複数試合が混ざったCSVもOK）<br/>
                   3. プレビューで紐付けを確認 → 確定<br/>
-                  4. 各選手のマイ統計に配信（GKのセーブ率も入ります）
+                  4. 各選手のマイ統計に配信（GKのセーブ率も入ります）<br/>
+                  ⚠ Googleシートに溜めた過去分は「シート全体」ではなく<b>提出（試合）ごとのCSV</b>で取り込むこと。
+                  同じ試合を2人が記録していた場合、シート全体だと二重計上されます。
                 </div>
               </div>
               <div className="card mt-16">
