@@ -1424,6 +1424,11 @@
       const [coachMode, setCoachMode] = useState(false); // 顧問として登録するか
       const [playerMode, setPlayerMode] = useState(true); // 初期は選手画面（顧問は下部ボタンから）
       const [coachName, setCoachName] = useState('');
+      // 顧問ディレクトリ（PINログイン用の名前一覧）
+      const [coachNames, setCoachNames] = useState({});
+      const [selectedCoachId, setSelectedCoachId] = useState(null);
+      const [coachPin, setCoachPin] = useState('');
+      useEffect(() => storage.subscribeCoachNames(setCoachNames), []);
 
       // 名簿リスト（active && 未連携優先）
       const rosterList = useMemo(() => {
@@ -1492,6 +1497,28 @@
           isCoach: true
         };
         try { await onLogin(user); } finally { setBusy(false); }
+      };
+
+      // 登録済み顧問のPINログイン（新端末の自己承認）。PIN正誤はFirebaseルールが判定する
+      const handleCoachPinLogin = async () => {
+        if (!selectedCoachId || coachPin.length !== 6) return;
+        setBusy(true);
+        try {
+          let myUid2 = authUid;
+          if (!myUid2 && fbAuth) myUid2 = (await fbAuth.signInAnonymously()).user.uid;
+          const hash = await hashCoachPin(coachPin);
+          await storage.claimCoach(myUid2, selectedCoachId, hash);
+          // 端末PINも同じ6桁で保存（次回この端末では同じPINで開ける）
+          localStorage.setItem(PIN_KEY, await hashPinV2(coachPin));
+          localStorage.setItem(NAME_KEY, coachNames[selectedCoachId] || '顧問');
+          await onLogin({
+            id: myUid2, name: coachNames[selectedCoachId] || '顧問', grade: 0,
+            position: '顧問', rosterId: null, createdAt: Date.now(), isCoach: true
+          });
+        } catch (e) {
+          console.warn('[coach pin login]', e);
+          alert('ログインできませんでした。PINが違うか、通信エラーです。');
+        } finally { setBusy(false); }
       };
 
       const handleLogin = async () => {
@@ -1575,7 +1602,7 @@
               </button>
               <p className="text-small text-muted" style={{textAlign:'center', marginTop:20, lineHeight:1.6}}>
                 選手 → 名簿から自分を選んでPIN設定<br/>
-                顧問 → 名前とPINで登録（承認制）
+                顧問 → 一覧から選んでPIN、初回のみ新規登録
               </p>
             </div>
           </div>
@@ -1588,8 +1615,30 @@
           <div className="login">
             <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
             <p className="subtitle">顧問・コーチ登録</p>
+            {Object.keys(coachNames).length > 0 && (
+              <div className="login-card" style={{marginBottom:12}}>
+                <h2>登録済み顧問でログイン</h2>
+                <div className="chip-group" style={{flexWrap:'wrap', marginBottom:12}}>
+                  {Object.entries(coachNames).map(([cid, nm]) => (
+                    <div key={cid} className={'chip ' + (selectedCoachId === cid ? 'selected' : '')} onClick={() => setSelectedCoachId(cid)}>{nm}</div>
+                  ))}
+                </div>
+                {selectedCoachId && (
+                  <>
+                    <div className="form-group">
+                      <label>顧問PIN（6桁）</label>
+                      <input type="password" inputMode="numeric" pattern="[0-9]*" maxLength="6" className="pin-input"
+                        value={coachPin} onChange={e => setCoachPin(e.target.value.replace(/[^0-9]/g, ''))} placeholder="••••••" />
+                    </div>
+                    <button className="btn" disabled={busy || coachPin.length !== 6} onClick={handleCoachPinLogin}>
+                      {busy ? '確認中...' : 'PINでログイン'}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             <div className="login-card">
-              <h2>顧問として登録</h2>
+              <h2>新しく顧問登録（初回のみ）</h2>
               <div className="form-group">
                 <label>お名前</label>
                 <input value={coachName} onChange={e => setCoachName(e.target.value)} placeholder="例: 山田先生" />
