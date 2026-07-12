@@ -796,6 +796,34 @@
         const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
         return () => ref.off('value', handler);
       },
+      // ----- 顧問ディレクトリ（PINログイン用。coachPins の正誤はルールが判定） -----
+      subscribeCoachNames: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('coachNames');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
+        return () => ref.off('value', handler);
+      },
+      upsertCoachEntry: async (coachId, name, pinHash) => {
+        if (!fbDB || !coachId || !name) return;
+        await fbDB.ref('coachNames/' + coachId).set(name);
+        if (pinHash) await fbDB.ref('coachPins/' + coachId).set(pinHash);
+      },
+      removeCoachEntry: async (coachId) => {
+        if (!fbDB || !coachId) return;
+        await fbDB.ref('coachPins/' + coachId).remove();
+        await fbDB.ref('coachNames/' + coachId).remove();
+      },
+      // 新端末の顧問自己承認。PIN不一致なら1つ目の set がルールで拒否される
+      claimCoach: async (authUid, coachId, pinHash) => {
+        if (!fbDB || !authUid || !coachId) throw new Error('not ready');
+        await fbDB.ref('coachClaims/' + authUid).set({ coachId, pinHash, at: firebase.database.ServerValue.TIMESTAMP });
+        await fbDB.ref('coaches/' + authUid).set(coachId);
+      },
+      removeCoachDevice: async (targetUid) => {
+        if (!fbDB || !targetUid) return;
+        await fbDB.ref('coaches/' + targetUid).remove();
+        await fbDB.ref('coachClaims/' + targetUid).remove();
+      },
       // ----- LAB（自主練ラボ）: 本人の試合カード（/lab/{uid}/matchCards・本人のみread・一回読み） -----
       getMyLabCards: async (uid) => {
         if (!fbDB || !uid) return [];
@@ -943,6 +971,15 @@
         return (await hashPinV2(pin, salt)) === stored;
       }
       return hashPin(pin) === stored; // 旧v1形式
+    }
+
+    // 顧問PIN（6桁・端末間共通）: 端末間で同一ハッシュが必要なため固定salt（形式 'c1:hex'）。
+    // 正誤判定はFirebaseルール側（coachClaims の .validate）。coachPins は読み取り不可のため
+    // オフライン総当たりはできない
+    async function hashCoachPin(pin) {
+      const data = new TextEncoder().encode('coachpin|' + String(pin) + '|handball-mental');
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      return 'c1:' + Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
     // ====== Helpers ======

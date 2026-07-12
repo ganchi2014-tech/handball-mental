@@ -24,12 +24,29 @@
 
     "coaches": {
       ".read": "auth != null",
-      ".write": false
+      ".write": false,
+      "$uid": {
+        ".write": "auth != null && ((auth.uid === $uid && newData.isString() && newData.val() === root.child('coachClaims').child($uid).child('coachId').val()) || (root.child('coaches').child(auth.uid).exists() && !newData.exists()))"
+      }
     },
 
     "staff": {
       ".read": "auth != null",
       ".write": false
+    },
+
+    "coachNames": {
+      ".read": "auth != null",
+      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+    },
+    "coachPins": {
+      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+    },
+    "coachClaims": {
+      "$uid": {
+        ".write": "auth != null && (auth.uid === $uid || (root.child('coaches').child(auth.uid).exists() && !newData.exists()))",
+        ".validate": "newData.child('coachId').isString() && newData.child('pinHash').isString() && newData.child('pinHash').val() === root.child('coachPins').child(newData.child('coachId').val()).val()"
+      }
     },
 
     "physicals": {
