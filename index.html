@@ -1428,7 +1428,11 @@
       const [coachNames, setCoachNames] = useState({});
       const [selectedCoachId, setSelectedCoachId] = useState(null);
       const [coachPin, setCoachPin] = useState('');
-      useEffect(() => storage.subscribeCoachNames(setCoachNames), []);
+      // 認証前に購読すると permission_denied で購読が死んだままになるため authUid を待つ
+      useEffect(() => {
+        if (!authUid) return;
+        return storage.subscribeCoachNames(setCoachNames);
+      }, [authUid]);
 
       // 名簿リスト（active && 未連携優先）
       const rosterList = useMemo(() => {
@@ -3477,7 +3481,10 @@
       const [dirPin, setDirPin] = useState('');
       const [editingId, setEditingId] = useState(null); // PIN変更対象の coachId
       const [busy, setBusy] = useState(false);
-      useEffect(() => storage.subscribeCoachNames(setNames), []);
+      useEffect(() => {
+        if (!myUid) return;
+        return storage.subscribeCoachNames(setNames);
+      }, [myUid]);
 
       const save = async () => {
         if (!name.trim()) { alert('名前を入力してください'); return; }
