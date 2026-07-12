@@ -3779,6 +3779,29 @@
     // ====== Player Detail (顧問が個別選手の詳細を見る) ======
     function PlayerDetail({ player, onBack, showToast }) {
       const p = player;
+      const [lab, setLab] = useState(null); // null | 'loading' | {yomi, gkPred, pv}
+      const loadLab = async () => {
+        setLab('loading');
+        try {
+          const [cards, gkRecs, pvRecs] = await Promise.all([
+            storage.getMyLabCards(p.uid),
+            storage.getMyLabNode(p.uid, 'gkPredictions'),
+            storage.getMyLabNode(p.uid, 'pvRecords')
+          ]);
+          let yn = 0, yh = 0;
+          cards.forEach(c => {
+            const ys = Array.isArray(c && c.yomi) ? c.yomi : Object.values((c && c.yomi) || {});
+            ys.forEach(y => { if (y && (y.hit === true || y.hit === false)) { yn++; if (y.hit === true) yh++; } });
+          });
+          let gn = 0, gh = 0;
+          gkRecs.forEach(r => { if (r && (r.hit === true || r.hit === false)) { gn++; if (r.hit === true) gh++; } });
+          setLab({
+            yomi: yn > 0 ? { n: yn, h: yh, pct: Math.round(yh / yn * 100) } : null,
+            gkPred: gn > 0 ? { n: gn, h: gh, pct: Math.round(gh / gn * 100) } : null,
+            pv: pvRecs.filter(Boolean).length
+          });
+        } catch (e) { console.debug('[coach lab detail]', e); setLab({ yomi: null, gkPred: null, pv: 0 }); }
+      };
       return (
         <>
           <button className="btn-ghost mb-16" onClick={onBack}>← 選手一覧に戻る</button>
@@ -3856,6 +3879,21 @@
               ))}
             </>
           )}
+
+          {/* LAB指標（オンデマンド読込。ルールでコーチ読取可） */}
+          <div className="card mt-16">
+            <div className="card-title">🧪 LAB指標</div>
+            {!lab && <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={loadLab}>読み・GK予測・PV認知を読み込む</button>}
+            {lab === 'loading' && <div className="card-subtitle">読込中...</div>}
+            {lab && lab !== 'loading' && (
+              <>
+                {lab.yomi && <div className="stat-row"><span className="label">🔮 読み的中率</span><span className="value">{lab.yomi.pct}%（{lab.yomi.h}/{lab.yomi.n}件）</span></div>}
+                {lab.gkPred && <div className="stat-row"><span className="label">🧤 GK予測的中率</span><span className="value">{lab.gkPred.pct}%（{lab.gkPred.h}/{lab.gkPred.n}本）</span></div>}
+                {lab.pv > 0 && <div className="stat-row"><span className="label">🎯 PV認知記録</span><span className="value">{lab.pv} 件</span></div>}
+                {!lab.yomi && !lab.gkPred && lab.pv === 0 && <div className="card-subtitle">LABの記録がまだありません（LAB未接続の選手は出ません）</div>}
+              </>
+            )}
+          </div>
 
           {p.sessionWorks && Object.keys(p.sessionWorks).length > 0 && (
             <>
