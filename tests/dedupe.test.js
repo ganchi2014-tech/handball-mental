@@ -94,4 +94,27 @@ t('複数試合はgameIdごとに分割', () => {
   assert.strictEqual(Object.keys(r.byGame).length, 2);
 });
 
+t('複数の重複グループを同時検出', () => {
+  const r2 = {
+    a: { surname: '関山', enrollmentYear: 2026 }, b: { surname: '関山', enrollmentYear: 2026 },
+    c: { surname: '小川', enrollmentYear: 2025 }, d: { surname: '小川', enrollmentYear: 2025 }
+  };
+  assert.strictEqual(D.findRosterDuplicates(r2).length, 2);
+});
+t('姓が空の行は重複グループにしない', () => {
+  const r2 = { a: { surname: '', enrollmentYear: 0 }, b: { surname: ' ', enrollmentYear: 0 } };
+  assert.deepStrictEqual(D.findRosterDuplicates(r2), []);
+});
+t('統合先が未連携で重複2行が別uid連携→conflict・moveUidなし', () => {
+  const p = D.planMerge(group, { b: 'uid1', e: 'uid2' }, 'a');
+  assert.strictEqual(p.conflict, true);
+  assert.strictEqual(p.moveUid, null);
+  assert.deepStrictEqual(p.unlinkIds.sort(), ['b', 'e']);
+});
+t('不正なchosenCanonicalIdは無視して自動選択', () => {
+  const p = D.planMerge(group, { b: 'uid1' }, 'zzz-not-in-group');
+  assert.strictEqual(p.canonicalId, 'b');
+  assert.strictEqual(p.deleteIds.length, 2);
+});
+
 console.log(`\n${passed} tests passed${process.exitCode ? ' (with failures)' : ''}`);
