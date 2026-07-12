@@ -287,6 +287,7 @@
     }
     .nav-item {
       flex: 1;
+      min-width: 0; /* 7タブでも375px幅で均等に収まるように（flexのmin-content床を外す） */
       padding: 8px 4px;
       background: none;
       border: none;
@@ -1809,6 +1810,9 @@
     }
 
     // ====== Bottom Nav ======
+    // 連携版アナライザー（試合記録）。mental とは別ページなので新しいタブで開く
+    const ANALYZER_URL = 'https://ganchi2014-tech.github.io/handball-mental/handball-analyzer/';
+
     function BottomNav({ view, onChange, isCoach }) {
       const items = isCoach ? [
         { id: 'home', icon: '🏠', label: 'ホーム' },
@@ -1816,6 +1820,7 @@
         { id: 'izof', icon: '🎯', label: 'IZOF' },
         { id: 'declaration', icon: '✅', label: '宣言' },
         { id: 'monthly', icon: '📊', label: '月評価' },
+        { id: 'analyzer', icon: '🏐', label: '記録' },
         { id: 'coach', icon: '👥', label: '顧問' }
       ] : [
         { id: 'home', icon: '🏠', label: 'ホーム' },
@@ -1823,7 +1828,8 @@
         { id: 'stats', icon: '📈', label: 'マイ統計' },
         { id: 'izof', icon: '🎯', label: 'IZOF' },
         { id: 'declaration', icon: '✅', label: '宣言' },
-        { id: 'monthly', icon: '📊', label: '月' }
+        { id: 'monthly', icon: '📊', label: '月' },
+        { id: 'analyzer', icon: '🏐', label: '記録' }
       ];
       return (
         <div className="nav">
@@ -1831,7 +1837,7 @@
             <button
               key={it.id}
               className={'nav-item ' + (view === it.id ? 'active' : '')}
-              onClick={() => onChange(it.id)}
+              onClick={() => it.id === 'analyzer' ? window.open(ANALYZER_URL, '_blank') : onChange(it.id)}
             >
               <div className="nav-icon">{it.icon}</div>
               <div>{it.label}</div>
@@ -2192,7 +2198,8 @@
                   }}>✏ 今のTryを更新する（あなたがボード係）</button>
                 )}
                 {team.voiceNotes && (() => {
-                  const vn = Object.values(team.voiceNotes).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 3);
+                  // 全体への声かけは当日だけホームに表示（翌日には消える。顧問の記録ログには残る）
+                  const vn = Object.values(team.voiceNotes).filter(n => n && n.date === todayStr()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 3);
                   return vn.length ? (
                     <div style={{marginTop:10, paddingTop:8, borderTop:'1px solid var(--border)'}}>
                       <div className="text-small" style={{color:'var(--text-2)', marginBottom:4}}>📣 監督の声かけ（直近）</div>
@@ -3167,7 +3174,7 @@
         <div className="card">
           <div className="card-title">📣 声かけ・アドバイスメモ（宛先を選んで記録）</div>
           <div className="card-subtitle">
-            <b>全体</b>＝全員のホームのチームボードに表示／<b>選手名</b>＝その選手だけが見られる（いつでも見返せる）。<br/>
+            <b>全体</b>＝全員のホームに<b>当日だけ</b>表示（記録はここに残る）／<b>選手名</b>＝その選手だけが見られる（いつでも見返せる）。<br/>
             教材と同じ言葉（次いこ／整えていこう）を使えているかの自己点検にも（平日アライメント①②）。
           </div>
           <div style={{display:'flex', gap:8, marginBottom:8}}>
