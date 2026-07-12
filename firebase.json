@@ -10,6 +10,13 @@
       "database.rules.json",
       ".claude/**",
       "handball-analyzer/**"
+    ],
+    "redirects": [
+      {
+        "source": "**",
+        "destination": "https://ganchi2014-tech.github.io/handball-mental/",
+        "type": 302
+      }
     ]
   }
 }
