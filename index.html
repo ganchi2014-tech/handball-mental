@@ -813,7 +813,9 @@
         await fbDB.ref('coachPins/' + coachId).remove();
         await fbDB.ref('coachNames/' + coachId).remove();
       },
-      // 新端末の顧問自己承認。PIN不一致なら1つ目の set がルールで拒否される
+      // 新端末の顧問自己承認。PIN不一致なら1つ目の set がルールで拒否される。
+      // この2書込みは分割必須: 単一の update() にまとめると coaches 側のルール検証が
+      // 書込前の root を参照し、claim 不在として失敗する（RTDBルールは書込前スナップショット基準）
       claimCoach: async (authUid, coachId, pinHash) => {
         if (!fbDB || !authUid || !coachId) throw new Error('not ready');
         await fbDB.ref('coachClaims/' + authUid).set({ coachId, pinHash, at: firebase.database.ServerValue.TIMESTAMP });
@@ -821,8 +823,12 @@
       },
       removeCoachDevice: async (targetUid) => {
         if (!fbDB || !targetUid) return;
-        await fbDB.ref('coaches/' + targetUid).remove();
-        await fbDB.ref('coachClaims/' + targetUid).remove();
+        // coaches と coachClaims は同時削除必須 — coaches だけ消えて claim が残ると、
+        // 解除した端末が現PINを知らなくても自己再承認できてしまう
+        return fbDB.ref().update({
+          ['coaches/' + targetUid]: null,
+          ['coachClaims/' + targetUid]: null
+        });
       },
       // ----- LAB（自主練ラボ）: 本人の試合カード（/lab/{uid}/matchCards・本人のみread・一回読み） -----
       getMyLabCards: async (uid) => {
