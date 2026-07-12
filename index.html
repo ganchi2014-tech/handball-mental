@@ -1810,8 +1810,10 @@
     }
 
     // ====== Bottom Nav ======
-    // 連携版アナライザー（試合記録）。mental とは別ページなので新しいタブで開く
-    const ANALYZER_URL = 'https://ganchi2014-tech.github.io/handball-mental/handball-analyzer/';
+    // 連携版アナライザー（試合記録）。別リポジトリとして公開されているため新しいタブで開く
+    // （mental リポジトリ内の handball-analyzer/ は .gitignore された別リポの作業ツリーで、
+    //   Pages/hosting には載らない。公開URLはこちらが正）
+    const ANALYZER_URL = 'https://ganchi2014-tech.github.io/handball-analyzer/';
 
     function BottomNav({ view, onChange, isCoach }) {
       const items = isCoach ? [
