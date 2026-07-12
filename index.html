@@ -4947,21 +4947,27 @@
 
       const seedDefault = async () => {
         const defaults = makeDefaultRosterEntries();
-        if (Object.keys(roster).length > 0) {
-          if (!confirm(`既に ${Object.keys(roster).length} 名登録されています。デフォルト${defaults.length}名（1・2年）を追加で投入しますか？`)) return;
-        } else {
-          if (!confirm(`analyzer デフォルトの${defaults.length}名（1・2年）を投入しますか？`)) return;
-        }
+        // 既存（同姓＋同入学年度）はスキップして未登録分だけ投入 — 二度押しで複製しない
+        const existing = new Set(Object.values(roster || {}).map(r => HMDedupe.dupKey(r)));
+        const missing = defaults.filter(d => !existing.has(HMDedupe.dupKey(d)));
+        if (missing.length === 0) { showToast('デフォルト名簿は投入済みです（追加なし）'); return; }
+        if (!confirm(`デフォルト${defaults.length}名のうち未登録の${missing.length}名を投入しますか？\n（登録済みの${defaults.length - missing.length}名はスキップ）`)) return;
         const fbDB = window.fbDB;
-        for (const entry of defaults) {
+        for (const entry of missing) {
           const newId = fbDB.ref('roster').push().key;
           await storage.upsertRoster(newId, entry);
         }
-        showToast(`${defaults.length}名を投入しました`);
+        showToast(`${missing.length}名を投入しました`);
       };
 
       const save = async (data) => {
         const fbDB = window.fbDB;
+        // 新規追加のみ: 同姓＋同入学年度の既存行があれば警告（意図的な同姓別人の追加は続行可）
+        if (!editing.id) {
+          const key = HMDedupe.dupKey({ surname: data.surname, enrollmentYear: Number(data.enrollmentYear) });
+          const dup = Object.values(roster || {}).find(r => r && HMDedupe.dupKey(r) === key);
+          if (dup && !confirm(`同じ姓・同じ入学年度の「${rosterDisplayName(dup)}」が既に登録されています。\n同一人物なら追加せず、既存の行を使ってください。\n\n別人として追加しますか？`)) return;
+        }
         const id = editing.id || fbDB.ref('roster').push().key;
         await storage.upsertRoster(id, {
           surname: data.surname,
