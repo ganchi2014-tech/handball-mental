@@ -3665,13 +3665,17 @@
       // 未取込のクラウド試合数（バッジ用）
       const pendingMatchCount = Object.values(matches || {}).filter(m => m && !m.importedAt).length;
 
-      // RTDB のデータを選手リストに整形
+      // RTDB のデータを選手リストに整形。
+      // 名簿に連携中の端末（rosterToUidの値）だけを表示 — 機種変更や再登録で残った
+      // 旧端末の記録が同名で並ぶのを防ぐ。非表示件数は staleCount で知らせる
+      const linkedUids = useMemo(() => new Set(Object.values(rosterToUid || {})), [rosterToUid]);
       const players = useMemo(() => {
         const arr = [];
         for (const [uid, data] of Object.entries(allUsersData || {})) {
           const s = (data && data.state) || {};
           if (!s.user) continue;
           if (s.user.isCoach) continue; // 顧問本人は除外
+          if (!linkedUids.has(uid)) continue; // 旧端末の残骸は非表示
           const statsAgg = aggregateGameStats((data && data.gameStats) || {});
           arr.push({
             uid,
@@ -3693,7 +3697,11 @@
         // 名前順ソート
         arr.sort((a, b) => (a.profile.name || '').localeCompare(b.profile.name || '', 'ja'));
         return arr;
-      }, [allUsersData]);
+      }, [allUsersData, linkedUids]);
+      // 非表示にした旧端末の記録数（選手のみ・参考表示用）
+      const staleCount = useMemo(() => Object.entries(allUsersData || {}).filter(([uid, d]) =>
+        d && d.state && d.state.user && !d.state.user.isCoach && !linkedUids.has(uid)).length,
+        [allUsersData, linkedUids]);
 
       const allConsults = useMemo(() => {
         const out = [];
@@ -3820,6 +3828,7 @@
             <div className="card-title">チーム全体</div>
             <div className="card-subtitle">
               登録選手 {players.length}名 / リアルタイム同期中
+              {staleCount > 0 && <><br/><span className="text-small text-muted">※ 旧端末の記録 {staleCount} 件は非表示（その選手がログインし直すと最新だけが表示されます）</span></>}
             </div>
             <div className="summary-stats" style={{marginTop:12}}>
               <div className="stat-card">
@@ -3837,31 +3846,84 @@
             </div>
           </div>
 
-          {/* チーム成績一覧（試合データ累計。タップで個人詳細へ） */}
-          {players.some(p => p.statsGames && p.statsGames.length > 0) && (
-            <div className="card mt-16">
-              <div className="card-title">📊 チーム成績（累計）</div>
-              <div className="card-subtitle">決定率 = ゴール÷シュート（TO除く）。GKはセーブ率。タップで個人詳細。</div>
-              {players
-                .filter(p => p.statsGames && p.statsGames.length > 0)
-                .sort((a, b) => b.statsTotal.goals - a.statsTotal.goals)
-                .map(p => (
-                  <div key={p.uid} className="stat-row" onClick={() => setSelected(p)} style={{cursor:'pointer'}}>
-                    <span className="label">{p.profile.name}</span>
-                    <span className="value">
-                      {p.statsTotal.faced > 0
-                        ? `🧤 ${p.statsTotal.saves}SV/枠内${p.statsTotal.faced} (${p.statsTotal.saveRate}%)`
-                        : `${p.statsTotal.goals}G/${p.statsTotal.shots}S (${p.statsTotal.goalRate}%)`}
-                      {p.statsTotal.turnovers > 0 ? ` TO${p.statsTotal.turnovers}` : ''}
-                      {teamLab && teamLab !== 'loading' && teamLab[p.uid] != null ? ` ・読み${teamLab[p.uid]}%` : ''}
-                    </span>
+          {/* チーム成績一覧（試合データ累計。表形式・タップで個人詳細へ） */}
+          {players.some(p => p.statsGames && p.statsGames.length > 0) && (() => {
+            const showLab = teamLab && teamLab !== 'loading';
+            const fieldRows = players.filter(p => p.statsGames.length > 0 && p.statsTotal.faced === 0)
+              .sort((a, b) => b.statsTotal.goals - a.statsTotal.goals);
+            const gkRows = players.filter(p => p.statsGames.length > 0 && p.statsTotal.faced > 0)
+              .sort((a, b) => b.statsTotal.faced - a.statsTotal.faced);
+            const th = { padding:'6px', textAlign:'right', color:'var(--text-2)', fontWeight:'normal', whiteSpace:'nowrap', fontSize:12 };
+            const td = { padding:'8px 6px', textAlign:'right', whiteSpace:'nowrap' };
+            const rowStyle = { cursor:'pointer', borderBottom:'1px solid rgba(255,255,255,0.06)' };
+            return (
+              <div className="card mt-16">
+                <div className="card-title">📊 チーム成績（累計）</div>
+                <div className="card-subtitle">決定率 = ゴール ÷ シュート（TOは数えない）。行をタップすると個人詳細。</div>
+                {fieldRows.length > 0 && (
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{width:'100%', borderCollapse:'collapse', fontSize:13, marginTop:8}}>
+                      <thead>
+                        <tr style={{borderBottom:'1px solid var(--border)'}}>
+                          <th style={{...th, textAlign:'left'}}>選手</th>
+                          <th style={th}>試合</th>
+                          <th style={th}>ゴール</th>
+                          <th style={th}>シュート</th>
+                          <th style={th}>決定率</th>
+                          <th style={th}>TO</th>
+                          {showLab && <th style={th}>読み</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fieldRows.map(p => (
+                          <tr key={p.uid} onClick={() => setSelected(p)} style={rowStyle}>
+                            <td style={{...td, textAlign:'left', fontWeight:600}}>{p.profile.name}</td>
+                            <td style={td}>{p.statsGames.length}</td>
+                            <td style={{...td, fontWeight:700}}>{p.statsTotal.goals}</td>
+                            <td style={td}>{p.statsTotal.shots}</td>
+                            <td style={{...td, color:'var(--primary)', fontWeight:700}}>{p.statsTotal.shots > 0 ? p.statsTotal.goalRate + '%' : '–'}</td>
+                            <td style={td}>{p.statsTotal.turnovers || '–'}</td>
+                            {showLab && <td style={td}>{teamLab[p.uid] != null ? teamLab[p.uid] + '%' : '–'}</td>}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                ))}
-              <button className="btn-ghost mt-16" style={{width:'100%'}} disabled={teamLab === 'loading'} onClick={loadTeamLab}>
-                {teamLab === 'loading' ? '読込中...' : (teamLab ? '🔄 LAB読み的中率を再読込' : '🧪 LAB読み的中率も表示')}
-              </button>
-            </div>
-          )}
+                )}
+                {gkRows.length > 0 && (
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{width:'100%', borderCollapse:'collapse', fontSize:13, marginTop:14}}>
+                      <thead>
+                        <tr style={{borderBottom:'1px solid var(--border)'}}>
+                          <th style={{...th, textAlign:'left'}}>🧤 GK</th>
+                          <th style={th}>試合</th>
+                          <th style={th}>セーブ</th>
+                          <th style={th}>枠内被シュート</th>
+                          <th style={th}>セーブ率</th>
+                          {showLab && <th style={th}>読み</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {gkRows.map(p => (
+                          <tr key={p.uid} onClick={() => setSelected(p)} style={rowStyle}>
+                            <td style={{...td, textAlign:'left', fontWeight:600}}>{p.profile.name}</td>
+                            <td style={td}>{p.statsGames.length}</td>
+                            <td style={{...td, fontWeight:700}}>{p.statsTotal.saves}</td>
+                            <td style={td}>{p.statsTotal.faced}</td>
+                            <td style={{...td, color:'var(--primary)', fontWeight:700}}>{p.statsTotal.saveRate}%</td>
+                            {showLab && <td style={td}>{teamLab[p.uid] != null ? teamLab[p.uid] + '%' : '–'}</td>}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <button className="btn-ghost mt-16" style={{width:'100%'}} disabled={teamLab === 'loading'} onClick={loadTeamLab}>
+                  {teamLab === 'loading' ? '読込中...' : (teamLab ? '🔄 LAB読み的中率を再読込' : '🧪 LAB読み的中率も表示')}
+                </button>
+              </div>
+            );
+          })()}
 
           {/* 今週の気になる選手（自動トリアージ） */}
           {triage.rows.length > 0 && (
