@@ -895,6 +895,323 @@ firebase deploy --only hosting
 
 ---
 
+### Task 11: 顧問PIN — ルール・ハッシュ・storageヘルパ
+
+（追加要求 2026-07-12: spec `docs/superpowers/specs/2026-07-12-coach-pin-design.md`。個人別6桁PINで
+新端末の顧問を自己承認できるようにする。PIN検証はルール側。）
+
+**Files:**
+- Modify: `database.rules.json`
+- Modify: `index.html`（`verifyPin` の直後にハッシュ関数、`subscribeStaff` ブロックの直後に storage ヘルパ）
+
+- [ ] **Step 1: `database.rules.json` — `coaches` ノードを置換**
+
+変更前:
+```json
+    "coaches": {
+      ".read": "auth != null",
+      ".write": false
+    },
+```
+変更後:
+```json
+    "coaches": {
+      ".read": "auth != null",
+      ".write": false,
+      "$uid": {
+        ".write": "auth != null && ((auth.uid === $uid && newData.isString() && newData.val() === root.child('coachClaims').child($uid).child('coachId').val()) || (root.child('coaches').child(auth.uid).exists() && !newData.exists()))"
+      }
+    },
+```
+意図: 本人は「自分のclaimと同じcoachId値」のみ書ける（claimはPIN一致時しか作れない）。
+顧問は任意エントリの削除のみ可（端末整理）。追加の偽造は不可。Console手動の `true` は併存。
+
+- [ ] **Step 2: `database.rules.json` — `staff` ノードの直後に3ノード追加**
+
+```json
+    "coachNames": {
+      ".read": "auth != null",
+      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+    },
+    "coachPins": {
+      ".write": "auth != null && root.child('coaches').child(auth.uid).exists()"
+    },
+    "coachClaims": {
+      "$uid": {
+        ".write": "auth != null && (auth.uid === $uid || (root.child('coaches').child(auth.uid).exists() && !newData.exists()))",
+        ".validate": "newData.child('coachId').isString() && newData.child('pinHash').isString() && newData.child('pinHash').val() === root.child('coachPins').child(newData.child('coachId').val()).val()"
+      }
+    },
+```
+※ `coachPins` に `.read` を書かない＝ルート `false` を継承（読取不可）。
+※ `.validate` の `pinHash.isString()` は null===null 素通り防止のため必須。
+
+- [ ] **Step 3: JSON構文チェック**
+
+`node -e "JSON.parse(require('fs').readFileSync('database.rules.json','utf8')); console.log('OK')"` → OK
+
+- [ ] **Step 4: `index.html` — `verifyPin` 関数の閉じ`}`の直後（`// ====== Helpers ======` の前）に追加**
+
+```js
+    // 顧問PIN（6桁・端末間共通）: 端末間で同一ハッシュが必要なため固定salt（形式 'c1:hex'）。
+    // 正誤判定はFirebaseルール側（coachClaims の .validate）。coachPins は読み取り不可のため
+    // オフライン総当たりはできない
+    async function hashCoachPin(pin) {
+      const data = new TextEncoder().encode('coachpin|' + String(pin) + '|handball-mental');
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      return 'c1:' + Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+```
+
+- [ ] **Step 5: `index.html` — storage の `subscribeStaff` ヘルパの閉じ `},` の直後に追加**
+
+```js
+      // ----- 顧問ディレクトリ（PINログイン用。coachPins の正誤はルールが判定） -----
+      subscribeCoachNames: (callback) => {
+        if (!fbDB) return () => {};
+        const ref = fbDB.ref('coachNames');
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
+        return () => ref.off('value', handler);
+      },
+      upsertCoachEntry: async (coachId, name, pinHash) => {
+        if (!fbDB || !coachId || !name) return;
+        await fbDB.ref('coachNames/' + coachId).set(name);
+        if (pinHash) await fbDB.ref('coachPins/' + coachId).set(pinHash);
+      },
+      removeCoachEntry: async (coachId) => {
+        if (!fbDB || !coachId) return;
+        await fbDB.ref('coachPins/' + coachId).remove();
+        await fbDB.ref('coachNames/' + coachId).remove();
+      },
+      // 新端末の顧問自己承認。PIN不一致なら1つ目の set がルールで拒否される
+      claimCoach: async (authUid, coachId, pinHash) => {
+        if (!fbDB || !authUid || !coachId) throw new Error('not ready');
+        await fbDB.ref('coachClaims/' + authUid).set({ coachId, pinHash, at: firebase.database.ServerValue.TIMESTAMP });
+        await fbDB.ref('coaches/' + authUid).set(coachId);
+      },
+      removeCoachDevice: async (targetUid) => {
+        if (!fbDB || !targetUid) return;
+        await fbDB.ref('coaches/' + targetUid).remove();
+        await fbDB.ref('coachClaims/' + targetUid).remove();
+      },
+```
+
+- [ ] **Step 6: 検証 → Commit**
+
+`node tests/dedupe.test.js`（19 PASS）＋ JSON構文チェックOK。デプロイはしない。
+```bash
+git add database.rules.json index.html
+git commit -m "feat: 顧問PIN基盤 — coachNames/coachPins/coachClaimsルールとhashCoachPin・storageヘルパ"
+```
+
+---
+
+### Task 12: 顧問リスト管理画面（CoachDirectory）
+
+**Files:**
+- Modify: `index.html` — `// ====== 顧問承認待ち画面 ======` コメントの直前に `CoachDirectory` コンポーネントを新設。`CoachDashboard` にタブ追加（signature に `coaches` を追加し、呼出し側にも `coaches={coaches}` を渡す）。
+
+- [ ] **Step 1: `CoachDirectory` コンポーネントを追加**（`// ====== 顧問承認待ち画面 ======` の直前）
+
+```jsx
+    // ====== 顧問リスト管理（PINログイン用ディレクトリ） ======
+    function CoachDirectory({ coaches, myUid, showToast, onBack }) {
+      const [names, setNames] = useState({});
+      const [name, setName] = useState('');
+      const [dirPin, setDirPin] = useState('');
+      const [editingId, setEditingId] = useState(null); // PIN変更対象の coachId
+      const [busy, setBusy] = useState(false);
+      useEffect(() => storage.subscribeCoachNames(setNames), []);
+
+      const save = async () => {
+        if (!name.trim()) { alert('名前を入力してください'); return; }
+        if (!/^\d{6}$/.test(dirPin)) { alert('顧問PINは6桁の数字で設定してください'); return; }
+        setBusy(true);
+        try {
+          const id = editingId || window.fbDB.ref('coachNames').push().key;
+          await storage.upsertCoachEntry(id, name.trim(), await hashCoachPin(dirPin));
+          setName(''); setDirPin(''); setEditingId(null);
+          showToast(editingId ? 'PINを更新しました' : '登録しました');
+        } catch (e) { console.warn('[coachDir]', e); alert('保存できませんでした: ' + e.message); }
+        finally { setBusy(false); }
+      };
+
+      const remove = async (id, nm) => {
+        if (!confirm(`「${nm}」を顧問リストから削除しますか？\n（この名前でのPINログインができなくなります。承認済み端末はそのまま残ります）`)) return;
+        try { await storage.removeCoachEntry(id); showToast('削除しました'); }
+        catch (e) { alert('削除できませんでした: ' + e.message); }
+      };
+
+      // 承認済み端末（/coaches）。値がcoachIdならPINログイン由来、true はConsole手動登録
+      const devices = Object.entries(coaches || {});
+      const unlinkDevice = async (uid2) => {
+        const mine = uid2 === myUid;
+        if (!confirm((mine ? '⚠ これは今使っている端末です。解除すると顧問機能が使えなくなります。\n' : '') + 'この端末の顧問承認を解除しますか？')) return;
+        try { await storage.removeCoachDevice(uid2); showToast('解除しました'); }
+        catch (e) { alert('解除できませんでした: ' + e.message); }
+      };
+
+      return (
+        <>
+          <button className="btn-ghost mb-16" onClick={onBack}>← 顧問Dashboardに戻る</button>
+          <div className="section-h">顧問リスト（PINログイン）</div>
+          <div className="card">
+            <div className="card-subtitle" style={{lineHeight:1.7}}>
+              ここに登録した顧問は、新しい端末でもログイン画面の一覧から名前を選び、顧問PIN(6桁)を入れるだけで使い始められます（Firebase Consoleでの登録は不要になります）。
+            </div>
+          </div>
+          {Object.entries(names).map(([id, nm]) => (
+            <div key={id} className="list-item">
+              <div><div className="title">{nm}</div></div>
+              <div className="right" style={{display:'flex', gap:6}}>
+                <button className="btn-ghost" style={{padding:'6px 10px', fontSize:12}} onClick={() => { setEditingId(id); setName(nm); setDirPin(''); }}>PIN変更</button>
+                <button className="btn-ghost" style={{padding:'6px 10px', fontSize:12}} onClick={() => remove(id, nm)}>削除</button>
+              </div>
+            </div>
+          ))}
+          <div className="card mt-16">
+            <div className="card-title">{editingId ? `PIN変更: ${names[editingId] || ''}` : '＋ 顧問を追加'}</div>
+            <div className="form-group">
+              <label>名前</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="例: 山田" disabled={!!editingId} />
+            </div>
+            <div className="form-group">
+              <label>顧問PIN（6桁・端末をまたぐ本人確認用）</label>
+              <input type="password" inputMode="numeric" pattern="[0-9]*" maxLength="6" className="pin-input"
+                value={dirPin} onChange={e => setDirPin(e.target.value.replace(/[^0-9]/g, ''))} placeholder="••••••" />
+            </div>
+            <div style={{display:'flex', gap:8}}>
+              {editingId && <button className="btn btn-secondary" style={{flex:1}} onClick={() => { setEditingId(null); setName(''); setDirPin(''); }}>キャンセル</button>}
+              <button className="btn" style={{flex:1}} disabled={busy} onClick={save}>{busy ? '保存中...' : (editingId ? 'PINを更新' : '登録')}</button>
+            </div>
+          </div>
+          <div className="card mt-16">
+            <div className="card-title">承認済み端末 {devices.length}台</div>
+            <div className="card-subtitle">解除するとその端末は顧問機能を使えなくなります（復旧の最終手段はFirebase Console）。</div>
+            {devices.map(([uid2, v]) => (
+              <div key={uid2} className="stat-row">
+                <span className="label">{typeof v === 'string' ? (names[v] || '(削除済み顧問)') : 'Console登録'}{uid2 === myUid ? '（この端末）' : ''}</span>
+                <span className="value"><button className="btn-ghost" style={{padding:'4px 8px', fontSize:12}} onClick={() => unlinkDevice(uid2)}>解除</button></span>
+              </div>
+            ))}
+          </div>
+        </>
+      );
+    }
+```
+
+- [ ] **Step 2: `CoachDashboard` にタブを追加**
+
+- signature `function CoachDashboard({ state, allUsersData, roster, rosterToUid, matches, ...` に `coaches,` を追加（`rosterToUid,` の直後）。
+- 呼出し側（App内 `<CoachDashboard ... rosterToUid={rosterToUid}` の箇所）に `coaches={coaches}` を追加。
+- タブ分岐（`if (tab === 'cloud') {...}` の直後）に追加:
+```jsx
+      if (tab === 'coachdir') {
+        return <CoachDirectory coaches={coaches} myUid={myUid} showToast={showToast} onBack={() => setTab('overview')} />;
+      }
+```
+- タブボタン群（`📥 CSVファイル取込` ボタンの直後）に追加:
+```jsx
+            <button className="btn btn-secondary" style={{flex:'1 1 auto'}} onClick={() => setTab('coachdir')}>👤 顧問リスト</button>
+```
+
+- [ ] **Step 3: 検証 → Commit**
+
+`node tests/dedupe.test.js` PASS・差分の目視（括弧/JSX整合）。
+```bash
+git add index.html
+git commit -m "feat: 顧問リスト管理画面（名前＋6桁PIN登録・PIN変更・承認済み端末の解除）"
+```
+
+---
+
+### Task 13: ログイン画面の「登録済み顧問でログイン」
+
+**Files:**
+- Modify: `index.html` — `Login` コンポーネント
+
+- [ ] **Step 1: Login に state と購読を追加**（既存の `const [savedPin, setSavedPin] = ...` 群の直後）
+
+```jsx
+      // 顧問ディレクトリ（PINログイン用の名前一覧）
+      const [coachNames, setCoachNames] = useState({});
+      const [selectedCoachId, setSelectedCoachId] = useState(null);
+      const [coachPin, setCoachPin] = useState('');
+      useEffect(() => storage.subscribeCoachNames(setCoachNames), []);
+```
+
+- [ ] **Step 2: ハンドラを追加**（`handleRegisterAsCoach` の直後）
+
+```jsx
+      // 登録済み顧問のPINログイン（新端末の自己承認）。PIN正誤はFirebaseルールが判定する
+      const handleCoachPinLogin = async () => {
+        if (!selectedCoachId || coachPin.length !== 6) return;
+        setBusy(true);
+        try {
+          let myUid2 = authUid;
+          if (!myUid2 && fbAuth) myUid2 = (await fbAuth.signInAnonymously()).user.uid;
+          const hash = await hashCoachPin(coachPin);
+          await storage.claimCoach(myUid2, selectedCoachId, hash);
+          // 端末PINも同じ6桁で保存（次回この端末では同じPINで開ける）
+          localStorage.setItem(PIN_KEY, await hashPinV2(coachPin));
+          localStorage.setItem(NAME_KEY, coachNames[selectedCoachId] || '顧問');
+          await onLogin({
+            id: myUid2, name: coachNames[selectedCoachId] || '顧問', grade: 0,
+            position: '顧問', rosterId: null, createdAt: Date.now(), isCoach: true
+          });
+        } catch (e) {
+          console.warn('[coach pin login]', e);
+          alert('ログインできませんでした。PINが違うか、通信エラーです。');
+        } finally { setBusy(false); }
+      };
+```
+
+- [ ] **Step 3: 顧問登録モードのUIに「登録済み顧問でログイン」カードを追加**
+
+`// ── 顧問登録モード` ブロック内、`<div className="login-card">`（`<h2>顧問として登録</h2>` を含むカード）の**直前**に挿入:
+
+```jsx
+            {Object.keys(coachNames).length > 0 && (
+              <div className="login-card" style={{marginBottom:12}}>
+                <h2>登録済み顧問でログイン</h2>
+                <div className="chip-group" style={{flexWrap:'wrap', marginBottom:12}}>
+                  {Object.entries(coachNames).map(([cid, nm]) => (
+                    <div key={cid} className={'chip ' + (selectedCoachId === cid ? 'selected' : '')} onClick={() => setSelectedCoachId(cid)}>{nm}</div>
+                  ))}
+                </div>
+                {selectedCoachId && (
+                  <>
+                    <div className="form-group">
+                      <label>顧問PIN（6桁）</label>
+                      <input type="password" inputMode="numeric" pattern="[0-9]*" maxLength="6" className="pin-input"
+                        value={coachPin} onChange={e => setCoachPin(e.target.value.replace(/[^0-9]/g, ''))} placeholder="••••••" />
+                    </div>
+                    <button className="btn" disabled={busy || coachPin.length !== 6} onClick={handleCoachPinLogin}>
+                      {busy ? '確認中...' : 'PINでログイン'}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+```
+
+あわせて既存カードの見出しを `<h2>顧問として登録</h2>` → `<h2>新しく顧問登録（初回のみ）</h2>` に変更し、
+役割選択画面の説明行 `顧問 → 名前とPINで登録（承認制）` を `顧問 → 一覧から選んでPIN、初回のみ新規登録` に変更。
+
+- [ ] **Step 4: 検証 → Commit**
+
+`node tests/dedupe.test.js` PASS・差分目視。
+```bash
+git add index.html
+git commit -m "feat: ログイン画面に登録済み顧問のPINログイン（新端末の自己承認）"
+```
+
+※ 受入（Task 9）に追記: 顧問リストに自分を登録 → 別ブラウザ（シークレットウィンドウ）で
+一覧から選択＋PINログイン → 顧問Dashboardが開き、Console登録なしで承認されること。
+誤PINで「ログインできませんでした」になること。
+
+---
+
 ## Self-Review（計画作成時に実施済み）
 
 - **Spec coverage**: ①重複統合＋再発防止=Task 4/5、②CSV取込=Task 6、③選手表示=実装済みのため対象外（planで明記）・コーチ一覧=Task 7/8、ルール=Task 3、④切替=Task 10。決定率定義は既存 `aggregateGameStats` に一致（変更不要）。
