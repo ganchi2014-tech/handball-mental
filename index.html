@@ -3258,7 +3258,7 @@
     }
 
     // ====== Declarations ======
-    function Declarations({ state, update, showToast }) {
+    function Declarations({ state, update, showToast, labDecl }) {
       const [adding, setAdding] = useState(false);
       const active = state.declarations.find(d => !d.completed);
       const history = state.declarations.filter(d => d.completed);
@@ -3298,6 +3298,17 @@
       return (
         <>
           <div className="section-h">行動宣言</div>
+
+          {labDecl && labDecl.text && (
+            <div className="card">
+              <div className="card-title">⚡ プレーの宣言（LABから・ここでは見るだけ）</div>
+              <div style={{marginTop:8}}>「{labDecl.text}」</div>
+              <div className="text-small text-muted" style={{marginTop:6}}>
+                {labDecl.done === true ? '✅ 達成ずみ' : labDecl.done === false ? '△ まだ — 次の練習で' : '🎯 宣言中'}
+                {' ・振り返りはLABアプリで'}
+              </div>
+            </div>
+          )}
 
           {active ? (
             <DeclarationActive d={active} onToggle={toggleDay} onComplete={complete} />
