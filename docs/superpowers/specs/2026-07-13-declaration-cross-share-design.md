@@ -88,6 +88,12 @@ HANDBALL LAB（handball-system）と handball-mental のデータ連携を完成
 | LAB 未連携生徒でのエラー | 両アプリともカード非表示でフォールバック（既存の resolveLabUid null 処理を踏襲） |
 | OneDrive 同期による作業ツリー破損 | コミット単位を小さく、push 前に `git status` 確認（既知の運用ルール） |
 
+## 受容済みリスクとPhase 3への申し送り（最終レビュー 2026-07-13）
+
+- **labLinks ブリッジ先取り（squatting）**: labLinks は「ノード未存在なら誰でも labUid=自uid で作成可」のため、匿名認証者が未ブリッジ選手の labLinks を先取りすると declShared（宣言要約のみ）を読める。**2026-07-08 ブリッジ設計時からの既存特性**であり、今回新規に増える露出は低機微の宣言要約のみ。Phase 3 のルール改修時に labLinks create へ `rosterToUid[rosterId] === $mentalUid` の validate 追加を検討する。
+- **updatedAt の鮮度表示**（「◯日前時点」）は未実装。Phase 3 で回収。
+- LAB 側の mental 宣言は一回読み（セッション中の更新は再接続まで反映されない）。labLoop と同型の意図的な選択。
+
 ## デプロイ
 
 - mental: git push（GitHub Pages が本番。firebase hosting は 302 転送のみ）＋ `firebase deploy --only database`（ルール変更時）

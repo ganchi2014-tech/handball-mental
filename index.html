@@ -1120,8 +1120,10 @@
         }));
         const json = JSON.stringify(summary);
         if (json === lastDeclJsonRef.current) return;
-        lastDeclJsonRef.current = json;
-        storage.saveDeclShared(authUid, summary).catch(e => console.debug('[declShared]', e));
+        // ref の更新は保存成功後のみ — 失敗（オフライン等）時は次の宣言変更で自動再送される
+        storage.saveDeclShared(authUid, summary)
+          .then(() => { lastDeclJsonRef.current = json; })
+          .catch(e => console.debug('[declShared]', e));
       }, [state.declarations, authUid, state.user]);
 
       // ── LAB の行動宣言（⚡プレーの宣言）を一回読み — 宣言画面のカード用（読めなければ非表示が正）
