@@ -1106,6 +1106,35 @@
         return () => { alive = false; };
       }, [authUid]);
 
+      // ── 宣言ミラー（declShared/{uid}）: declarations の要約が変わったときだけ書く。
+      // checks は日付配列のまま出さず件数に要約（LAB に日々の詳細まで見せる必要はない）
+      const lastDeclJsonRef = useRef('');
+      useEffect(() => {
+        if (!authUid || !state.user || state.user.isCoach) return;
+        const summary = (state.declarations || []).map(d => ({
+          id: d.id,
+          declaration: d.declaration,
+          startDate: d.startDate || '',
+          checkCount: (d.checks || []).length,
+          completed: !!d.completed
+        }));
+        const json = JSON.stringify(summary);
+        if (json === lastDeclJsonRef.current) return;
+        lastDeclJsonRef.current = json;
+        storage.saveDeclShared(authUid, summary).catch(e => console.debug('[declShared]', e));
+      }, [state.declarations, authUid, state.user]);
+
+      // ── LAB の行動宣言（⚡プレーの宣言）を一回読み — 宣言画面のカード用（読めなければ非表示が正）
+      const [labDecl, setLabDecl] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        if (!authUid) { setLabDecl(null); return; }
+        storage.getMyLabSingleton(authUid, 'declaration')
+          .then(v => { if (alive) setLabDecl(v); })
+          .catch(e => { console.debug('[lab decl]', e); if (alive) setLabDecl(null); });
+        return () => { alive = false; };
+      }, [authUid]);
+
       // ── クラウド試合購読（顧問のみ）
       // 承認(/coaches登録)前に購読すると permission_denied で購読が死んだままになるため、
       // isApprovedCoach を待ち、承認が下りた瞬間に再購読する
@@ -1379,7 +1408,7 @@
               <SessionWorks state={state} update={update} showToast={showToast} team={team} />
             )}
             {view === 'declaration' && (
-              <Declarations state={state} update={update} showToast={showToast} />
+              <Declarations state={state} update={update} showToast={showToast} labDecl={labDecl} />
             )}
             {view === 'monthly' && (
               <Monthly state={state} update={update} showToast={showToast} />
