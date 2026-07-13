@@ -871,6 +871,16 @@
         const snap = await fbDB.ref('lab/' + labUid + '/' + node).get();
         return snap.val() || null;
       }
+      ,
+      // ----- 宣言ミラー（declShared/{uid}・LAB の「メンタルの宣言」カード用） -----
+      // state.declarations の要約だけを書く。state 本体（夜間ログ・IZOF等）は絶対にここへ入れない。
+      saveDeclShared: async (authUid, summary) => {
+        if (!fbDB || !authUid) return;
+        return fbDB.ref('declShared/' + authUid).set({
+          declarations: summary,
+          updatedAt: firebase.database.ServerValue.TIMESTAMP
+        });
+      }
     };
 
     // ====== Roster Helpers（学年自動計算） ======
