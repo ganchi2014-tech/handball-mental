@@ -2,7 +2,7 @@
 
 日付: 2026-07-13
 状態: 設計承認済み・実装前
-前提: `specs/2026-07-08-lab-bridge-design.md`（labLinks × rosterToUid 二重照合の橋）が本番稼働中
+前提: labLinks × rosterToUid 二重照合の橋が本番稼働中（実装: mental `index.html` の `resolveLabUid`/`getMyLabNode`、LAB `app/src/lib/fb.js` の `fbWriteLabLink`。設計書ファイルは未作成のためコード実装を正とする）
 
 ## 目的
 
