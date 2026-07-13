@@ -2,7 +2,7 @@
 
 日付: 2026-07-13
 状態: 設計承認済み・実装前
-前提: labLinks × rosterToUid 二重照合の橋が本番稼働中（実装: mental `index.html` の `resolveLabUid`/`getMyLabNode`、LAB `app/src/lib/fb.js` の `fbWriteLabLink`。設計書ファイルは未作成のためコード実装を正とする）
+前提: labLinks × rosterToUid 二重照合の橋が本番稼働中（設計書: `docs/superpowers/specs/2026-07-08-lab-bridge-design.md`。実装: mental `index.html` の `resolveLabUid`/`getMyLabNode`、LAB `app/src/lib/fb.js` の `fbWriteLabLink`）
 
 ## 目的
 
@@ -26,7 +26,7 @@ HANDBALL LAB（handball-system）と handball-mental のデータ連携を完成
 - LAB の `next-declaration`（localStorage、現在 Firebase 同期対象外）を同期対象に追加する
   - Firebase パス: `lab/{labUid}/declaration`（単一オブジェクト）
   - スキーマ: `{ text, ts, mode, done, answeredTs }`（LAB の既存構造そのまま）
-  - 実装: `app/src/lib/fb.js` の `FB_NODES` に singleton として追加（`loopState` と同じ一方向ミラー方式）
+  - 実装: `app/src/lib/fb.js` に `fbSetDeclaration` を追加（`fbSetLoopState` と同じ独立push関数・一方向ミラー方式。FB_NODES は配列ノード専用なので追加しない）
 - mental 側: 既存の `getMyLabSingleton`（`index.html`、loopState の読み方と同一パターン）で `lab/{labUid}/declaration` を読み、宣言画面に「⚡プレーの宣言（LABから）」カードを**読み取り専用**で表示
 - LAB 未連携（`resolveLabUid` が null）の場合はカード自体を非表示。エラー表示にしない
 
