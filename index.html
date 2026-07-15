@@ -5041,6 +5041,80 @@
 
       return (
         <>
+          {/* 🗂 あなたの積み上げ（1枚集約） */}
+          {(() => {
+            const decls = state.declarations || [];
+            const declDone = decls.filter(d => d.completed).length;
+            const declActive = decls.filter(d => !d.completed).length;
+            const reflN = (state.reflections || []).length;
+            return (
+              <>
+                <div className="section-h">🗂 あなたの積み上げ</div>
+                <div className="card mb-16">
+                  <div className="stat-row"><span className="label">🎯 行動宣言</span><span className="value">達成 {declDone}／進行中 {declActive}</span></div>
+                  <div className="stat-row"><span className="label">📝 振り返り</span><span className="value">累計 {reflN} 本</span></div>
+                  {yomiStat && <div className="stat-row"><span className="label">🔮 読み的中率</span><span className="value">{yomiStat.pct}%</span></div>}
+                  {tbStat && <div className="stat-row"><span className="label">🛠 課題</span><span className="value">{tbStat.n} 件</span></div>}
+                </div>
+              </>
+            );
+          })()}
+
+          {/* ① 行動宣言タイル */}
+          {(() => {
+            const decls = state.declarations || [];
+            const active = decls.filter(d => !d.completed);
+            const done = decls.filter(d => d.completed);
+            return (
+              <>
+                <div className="section-h">🎯 行動宣言</div>
+                <div className="card mb-16">
+                  {active.length === 0 && done.length === 0 ? (
+                    <>
+                      <div className="card-subtitle">まだ宣言がありません</div>
+                      <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={() => onNav && onNav('declaration')}>行動宣言を始める →</button>
+                    </>
+                  ) : (
+                    <>
+                      {active.map(d => (
+                        <div key={d.id} className="stat-row">
+                          <span className="label">進行中</span>
+                          <span className="value" style={{maxWidth:'75%', textAlign:'right'}}>「{d.declaration}」・{(d.checks || []).length}日</span>
+                        </div>
+                      ))}
+                      <div className="stat-row"><span className="label">完了した宣言</span><span className="value">{done.length} 件{decls.length > 0 ? `（達成率 ${Math.round(done.length / decls.length * 100)}%）` : ''}</span></div>
+                      <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={() => onNav && onNav('declaration')}>宣言を開く →</button>
+                    </>
+                  )}
+                </div>
+              </>
+            );
+          })()}
+
+          {/* ② 振り返りタイル */}
+          {(() => {
+            const refs = (state.reflections || []).slice().sort((a, b) => (b.gameDate || '').localeCompare(a.gameDate || ''));
+            return (
+              <>
+                <div className="section-h">📝 振り返り</div>
+                <div className="card mb-16">
+                  {refs.length === 0 ? (
+                    <div className="card-subtitle">まだ振り返りがありません</div>
+                  ) : (
+                    <>
+                      <div className="stat-row"><span className="label">累計</span><span className="value">{refs.length} 本</span></div>
+                      <div className="stat-row"><span className="label">最後に書いた日</span><span className="value">{refs[0].gameDate || '—'}</span></div>
+                      {refs.slice(0, 3).map(r => (
+                        <div key={r.id} className="stat-row"><span className="label">{(r.gameDate || '').slice(5)}</span><span className="value" style={{maxWidth:'70%', textAlign:'right'}}>{r.bestPlay || r.coachWord || `結果 ${r.result || '?'}`}</span></div>
+                      ))}
+                    </>
+                  )}
+                  <button className="btn-ghost mt-16" style={{width:'100%'}} onClick={() => onWriteReflection && onWriteReflection()}>振り返りを書く →</button>
+                </div>
+              </>
+            );
+          })()}
+
           {(state.selfChecks && state.selfChecks.length > 0) && (
             <>
               <div className="section-h">心の5つの力（最新）</div>
