@@ -5115,6 +5115,21 @@
             );
           })()}
 
+          {/* ③ 課題タイル（LAB・読めなければ非表示） */}
+          {tbStat && (
+            <>
+              <div className="section-h">🛠 課題（LAB）</div>
+              <div className="card mb-16">
+                <div className="stat-row"><span className="label">作った課題</span><span className="value">{tbStat.n} 件</span></div>
+                {tbStat.names.map((nm, i) => (
+                  <div key={i} className="stat-row"><span className="label">・</span><span className="value" style={{maxWidth:'80%', textAlign:'right'}}>{nm}</span></div>
+                ))}
+                <button className="btn-ghost mt-16" style={{width:'100%'}}
+                  onClick={() => window.open('https://ganchi2014-tech.github.io/handball-system/', '_blank')}>LABで課題を作る →</button>
+              </div>
+            </>
+          )}
+
           {(state.selfChecks && state.selfChecks.length > 0) && (
             <>
               <div className="section-h">心の5つの力（最新）</div>
