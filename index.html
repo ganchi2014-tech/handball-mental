@@ -4989,9 +4989,10 @@
       const [yomiStat, setYomiStat] = useState(null);
       const [gkPredStat, setGkPredStat] = useState(null);
       const [pvStat, setPvStat] = useState(null);
+      const [tbStat, setTbStat] = useState(null);
       useEffect(() => {
         let alive = true;
-        if (!authUid) { setYomiStat(null); setGkPredStat(null); setPvStat(null); return; }
+        if (!authUid) { setYomiStat(null); setGkPredStat(null); setPvStat(null); setTbStat(null); return; }
         storage.getMyLabCards(authUid)
           .then(cards => {
             if (!alive) return;
@@ -5022,6 +5023,15 @@
             setPvStat(n > 0 ? { n } : null);
           })
           .catch(e => { console.debug('[lab pv]', e); if (alive) setPvStat(null); });
+        storage.getMyLabNode(authUid, 'tbTasks')
+          .then(recs => {
+            if (!alive) return;
+            const list = (recs || []).filter(Boolean);
+            setTbStat(list.length > 0
+              ? { n: list.length, names: list.slice(0, 3).map(t => t && t.name).filter(Boolean) }
+              : null);
+          })
+          .catch(e => { console.debug('[lab tb]', e); if (alive) setTbStat(null); });
         return () => { alive = false; };
       }, [authUid]);
 
