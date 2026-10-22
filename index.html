@@ -750,6 +750,18 @@
         if (!fbDB || !authUid) return;
         return fbDB.ref('users/' + authUid + '/gameStats/' + gameId).set(rowsObj);
       },
+      // ----- 選手別配信（analyzer が送信時に /playerStats/{rosterId}/{matchId} へ直接書く） -----
+      // 顧問の取込を待たずに本人へ届く。読取は rosterToUid[rosterId] === 自uid のときのみ（ルール）
+      subscribePlayerStats: (rosterId, callback) => {
+        if (!fbDB || !rosterId) return () => {};
+        const ref = fbDB.ref('playerStats/' + rosterId);
+        const handler = ref.on('value', (snap) => callback(snap.val() || {}), () => callback({}));
+        return () => ref.off('value', handler);
+      },
+      saveRosterStats: async (rosterId, gameId, rowsObj) => {
+        if (!fbDB || !rosterId) return;
+        return fbDB.ref('playerStats/' + rosterId + '/' + gameId).set(rowsObj);
+      },
       subscribeMyGameStats: (authUid, callback) => {
         if (!fbDB || !authUid) return () => {};
         const ref = fbDB.ref('users/' + authUid + '/gameStats');
@@ -1044,7 +1056,10 @@
       const [coaches, setCoaches] = useState({});         // {authUid: true} 顧問承認リスト
       const [staff, setStaff] = useState({});             // {authUid: true} マネージャー承認リスト
       const [team, setTeam] = useState({});               // チームボード（合言葉・ルール等）
-      const [myGameStats, setMyGameStats] = useState({}); // 自分のCSV取込済データ
+      const [importedGameStats, setImportedGameStats] = useState({}); // 顧問取込・CSV取込済データ（users/{uid}/gameStats）
+      const [rosterGameStats, setRosterGameStats] = useState({});     // analyzer 直送データ（playerStats/{rosterId}）
+      // 同じ試合IDは直送側を優先（analyzer の修正再送がそのまま反映される）
+      const myGameStats = useMemo(() => ({ ...importedGameStats, ...rosterGameStats }), [importedGameStats, rosterGameStats]);
       const [myPhysicals, setMyPhysicals] = useState([]); // 自分のフィジカル測定（配列）
       const [matches, setMatches] = useState({});         // クラウド試合（analyzer保存）
       const [autoImport, setAutoImport] = useState(() => localStorage.getItem('mental_auto_import') === '1');
@@ -1075,10 +1090,18 @@
 
       // ── 自分の試合データ（CSV取込済）購読
       useEffect(() => {
-        if (!authUid) { setMyGameStats({}); return; }
-        const unsub = storage.subscribeMyGameStats(authUid, setMyGameStats);
+        if (!authUid) { setImportedGameStats({}); return; }
+        const unsub = storage.subscribeMyGameStats(authUid, setImportedGameStats);
         return unsub;
       }, [authUid]);
+
+      // ── analyzer 直送の自分の試合データ購読（選手のみ・rosterToUid 連携後に読める）
+      const myRosterId = state.user && !state.user.isCoach ? state.user.rosterId : null;
+      const myRosterLinked = !!(myRosterId && authUid && rosterToUid[myRosterId] === authUid);
+      useEffect(() => {
+        if (!myRosterLinked) { setRosterGameStats({}); return; }
+        return storage.subscribePlayerStats(myRosterId, setRosterGameStats);
+      }, [myRosterId, myRosterLinked]);
 
       // ── 自分のフィジカル測定購読
       useEffect(() => {
@@ -1176,6 +1199,9 @@
         let savedPlayers = 0, skippedNoUid = 0;
         const gameId = matchId;
         for (const [rid, rowsObj] of Object.entries(byRoster)) {
+          // 選手別配信にも書く（旧試合の補完。未登録の選手も登録した時点で見られる）
+          try { await storage.saveRosterStats(rid, gameId, rowsObj); }
+          catch (e) { console.warn('[importMatch playerStats]', rid, e); }
           const targetUid = rosterToUid[rid];
           if (!targetUid) { skippedNoUid++; continue; }
           try {
@@ -5041,6 +5067,82 @@
 
       return (
         <>
+          {/* 試合データ（analyzer 直送で即時反映されるため最上部） */}
+          <div className="section-h">マイ統計（試合データ）</div>
+
+          {games.length === 0 ? (
+            <div className="card">
+              <div className="card-title">まだ試合データがありません</div>
+              <div className="card-subtitle">
+                試合記録係が handball-analyzer で「送信」すると、ここに自分のデータがすぐ表示されます。
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="card">
+                <div className="card-title">累計</div>
+                <div className="summary-stats" style={{marginTop:12}}>
+                  <div className="stat-card">
+                    <div className="num">{total.goals}</div>
+                    <div className="label">ゴール</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="num">{total.shots}</div>
+                    <div className="label">シュート</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="num">{total.goalRate}%</div>
+                    <div className="label">決定率</div>
+                  </div>
+                </div>
+                <div className="stat-row mt-16">
+                  <span className="label">参加試合</span>
+                  <span className="value">{games.length} 試合</span>
+                </div>
+                <div className="stat-row">
+                  <span className="label">ターンオーバー</span>
+                  <span className="value">{total.turnovers} 回</span>
+                </div>
+              </div>
+
+              {total.faced > 0 && (
+                <div className="card mt-16">
+                  <div className="card-title">🧤 GK累計</div>
+                  <div className="summary-stats" style={{marginTop:12}}>
+                    <div className="stat-card"><div className="num">{total.saves}</div><div className="label">セーブ</div></div>
+                    <div className="stat-card"><div className="num">{total.faced}</div><div className="label">枠内被シュート</div></div>
+                    <div className="stat-card"><div className="num">{total.saveRate}%</div><div className="label">セーブ率</div></div>
+                  </div>
+                </div>
+              )}
+
+              <div className="section-h">試合別</div>
+              {games.map(g => {
+                const hasReflection = !!reflectionsByDate[g.date];
+                return (
+                  <div key={g.gameId} className="list-item" onClick={() => setSelectedGame(g)} style={{cursor:'pointer'}}>
+                    <div>
+                      <div className="title">vs {g.opponent}</div>
+                      <div className="sub">{g.date}</div>
+                      <div className="sub" style={{marginTop:4}}>
+                        {g.faced > 0
+                          ? `🧤 ${g.saves}セーブ / 枠内${g.faced}本 (${g.saveRate}%)` + (g.shots > 0 ? ` ・ ${g.goals}G/${g.shots}S` : '')
+                          : <>{g.goals}G / {g.shots}S{g.goalRate > 0 && ` (${g.goalRate}%)`}{g.turnovers > 0 && ` / TO${g.turnovers}`}</>}
+                      </div>
+                      {hasReflection && (
+                        <div className="sub" style={{marginTop:4, color:'var(--accent)'}}>📝 メンタル振り返り有</div>
+                      )}
+                    </div>
+                    <div className="right">
+                      <div className="score">{g.faced > 0 ? g.saves : g.goals}</div>
+                      <div className="sub">{g.faced > 0 ? 'SV' : 'G'}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+
           {/* 🗂 あなたの積み上げ（1枚集約） */}
           {(() => {
             const decls = state.declarations || [];
@@ -5183,81 +5285,6 @@
                   🧪 LABを開く →
                 </button>
               </div>
-            </>
-          )}
-
-          <div className="section-h">マイ統計（試合データ）</div>
-
-          {games.length === 0 ? (
-            <div className="card">
-              <div className="card-title">まだ試合データがありません</div>
-              <div className="card-subtitle">
-                顧問が handball-analyzer から CSVを取り込むと、ここに自分のデータが表示されます。
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="card">
-                <div className="card-title">累計</div>
-                <div className="summary-stats" style={{marginTop:12}}>
-                  <div className="stat-card">
-                    <div className="num">{total.goals}</div>
-                    <div className="label">ゴール</div>
-                  </div>
-                  <div className="stat-card">
-                    <div className="num">{total.shots}</div>
-                    <div className="label">シュート</div>
-                  </div>
-                  <div className="stat-card">
-                    <div className="num">{total.goalRate}%</div>
-                    <div className="label">決定率</div>
-                  </div>
-                </div>
-                <div className="stat-row mt-16">
-                  <span className="label">参加試合</span>
-                  <span className="value">{games.length} 試合</span>
-                </div>
-                <div className="stat-row">
-                  <span className="label">ターンオーバー</span>
-                  <span className="value">{total.turnovers} 回</span>
-                </div>
-              </div>
-
-              {total.faced > 0 && (
-                <div className="card mt-16">
-                  <div className="card-title">🧤 GK累計</div>
-                  <div className="summary-stats" style={{marginTop:12}}>
-                    <div className="stat-card"><div className="num">{total.saves}</div><div className="label">セーブ</div></div>
-                    <div className="stat-card"><div className="num">{total.faced}</div><div className="label">枠内被シュート</div></div>
-                    <div className="stat-card"><div className="num">{total.saveRate}%</div><div className="label">セーブ率</div></div>
-                  </div>
-                </div>
-              )}
-
-              <div className="section-h">試合別</div>
-              {games.map(g => {
-                const hasReflection = !!reflectionsByDate[g.date];
-                return (
-                  <div key={g.gameId} className="list-item" onClick={() => setSelectedGame(g)} style={{cursor:'pointer'}}>
-                    <div>
-                      <div className="title">vs {g.opponent}</div>
-                      <div className="sub">{g.date}</div>
-                      <div className="sub" style={{marginTop:4}}>
-                        {g.faced > 0
-                          ? `🧤 ${g.saves}セーブ / 枠内${g.faced}本 (${g.saveRate}%)` + (g.shots > 0 ? ` ・ ${g.goals}G/${g.shots}S` : '')
-                          : <>{g.goals}G / {g.shots}S{g.goalRate > 0 && ` (${g.goalRate}%)`}{g.turnovers > 0 && ` / TO${g.turnovers}`}</>}
-                      </div>
-                      {hasReflection && (
-                        <div className="sub" style={{marginTop:4, color:'var(--accent)'}}>📝 メンタル振り返り有</div>
-                      )}
-                    </div>
-                    <div className="right">
-                      <div className="score">{g.faced > 0 ? g.saves : g.goals}</div>
-                      <div className="sub">{g.faced > 0 ? 'SV' : 'G'}</div>
-                    </div>
-                  </div>
-                );
-              })}
             </>
           )}
 

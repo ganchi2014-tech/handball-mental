@@ -78,7 +78,19 @@
 
     "matches": {
       ".read": "auth != null && root.child('coaches').child(auth.uid).exists()",
-      ".write": "auth != null"
+      ".write": "auth != null",
+      "$matchId": {
+        "playerRids": {
+          ".read": "auth != null"
+        }
+      }
+    },
+
+    "playerStats": {
+      "$rid": {
+        ".read": "auth != null && (root.child('rosterToUid').child($rid).val() === auth.uid || root.child('coaches').child(auth.uid).exists())",
+        ".write": "auth != null"
+      }
     },
 
     "lab": {
