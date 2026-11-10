@@ -2707,6 +2707,10 @@
       { key:'reactAccPct',        name:'反応 初動正答率',     unit:'%',  lowerIsBetter:false, group:'all', tePct:7 }, // rank13/17: CP反応 R2/R3 初動正答%
       { key:'fastbreakFinishPct', name:'速攻フィニッシュ率',  unit:'%',  lowerIsBetter:false, group:'all', tePct:8 }, // rank13: 連続速攻6本のシュート到達率（少数試行で分散大）
       { key:'fastbreakOutletSec', name:'速攻アウトレット秒',  unit:'秒', lowerIsBetter:true,  group:'all', tePct:7, selfOnly:true }, // rank15: 査読基準値なし(1.5秒は努力目標)＝自己比較のみ
+      // ↓ 持久系（2026-11追加）。どちらもタイム＝小さいほど良い。外部基準値なし＝自己比較のみ。
+      //    format:'mmss' = 入力・表示は「分:秒」、保存値は秒（数値）に統一（グラフ・基準比%は既存ロジックのまま動く）
+      { key:'enduranceBasket5', name:'持バスケ5',  unit:'秒',    lowerIsBetter:true, group:'all', tePct:8, selfOnly:true },
+      { key:'endurance10Set',   name:'持10セット', unit:'分:秒', lowerIsBetter:true, group:'all', tePct:8, selfOnly:true, format:'mmss' },
       { key:'gkPush_R',   name:'横プッシュオフ(右)', unit:'cm', lowerIsBetter:false, group:'gk' },
       { key:'gkPush_L',   name:'横プッシュオフ(左)', unit:'cm', lowerIsBetter:false, group:'gk' },
       { key:'gkSplit',    name:'開脚幅',            unit:'cm', lowerIsBetter:false, group:'gk' },
@@ -2714,6 +2718,20 @@
       // gkReact は実コードのキー名（前稿 gk_react は誤記）。刺激オンセットの動画同期が難で標準化不可のため「参考」に降格【rank17】
       { key:'gkReact',    name:'反応(合図→セーブ)', unit:'秒', lowerIsBetter:true,  group:'gk', reference:true },
     ];
+    // 分:秒 種目（format:'mmss'）の変換。保存値は秒。
+    // parseMmss: '12:34' → 754 / 不正（コロンなし・秒が60以上など）は null
+    const parseMmss = (str) => {
+      const m = String(str == null ? '' : str).trim().replace(/：/g, ':').match(/^(\d{1,3}):([0-5]\d(?:\.\d+)?)$/);
+      return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+    };
+    const fmtMmss = (sec) => {
+      const t = Math.round(Number(sec) * 10) / 10;
+      const m = Math.floor(t / 60), s = Math.round((t - m * 60) * 10) / 10;
+      const [si, sd] = String(s).split('.');
+      return m + ':' + si.padStart(2, '0') + (sd ? '.' + sd : '');
+    };
+    // 値＋単位の表示（mmss 種目は「12:34」だけで単位を付けない）
+    const physFmt = (it, val) => it.format === 'mmss' ? fmtMmss(val) : `${val}${it.unit}`;
     // 対象選手がGKか否かで表示する種目を絞る
     const physItemsFor = (isGK) => PHYS_ITEMS.filter(it => it.group === 'all' || (isGK && it.group === 'gk'));
     // D: 成長記録（パフォーマンス指標ではないので %グラフには出さず、急伸フラグの材料にする）。値は physicals の rec.items に同居
@@ -4484,7 +4502,7 @@
                   const col = within ? 'var(--text-3)' : (bp.pct > 0 ? 'var(--success)' : '#f5a900');
                   const txt = within ? '誤差内' : (bp.pct > 0 ? '+' : '') + bp.pct.toFixed(0) + '%';
                   chip = <span style={{marginLeft:'auto', color:col, fontWeight:700, fontSize:12}}
-                    title={`基準(${bp.baseDate}) ${bp.base}${it.unit} → 最新 ${bp.latest}${it.unit}`}>基準比 {txt}</span>;
+                    title={`基準(${bp.baseDate}) ${physFmt(it, bp.base)} → 最新 ${physFmt(it, bp.latest)}`}>基準比 {txt}</span>;
                 }
                 return (
                   <div key={it.key} className="card" style={{padding:12, opacity: it.reference ? 0.72 : 1}}>
@@ -4492,12 +4510,12 @@
                       {it.name}{it.reference && <span className="text-small text-muted" style={{marginLeft:6, fontWeight:400}}>参考</span>}
                     </div>
                     <div style={{display:'flex', alignItems:'baseline', gap:6, marginTop:4}}>
-                      <span style={{fontSize:22, fontWeight:800}}>{latest.val}</span>
+                      <span style={{fontSize:22, fontWeight:800}}>{it.format === 'mmss' ? fmtMmss(latest.val) : latest.val}</span>
                       <span className="text-small text-muted">{it.unit}</span>
                       {chip}
                     </div>
                     <div className="text-small text-muted" style={{marginTop:2}}>
-                      自己ベスト {best}{it.unit}{isBest && <span style={{color:'var(--success)', marginLeft:6}}>★更新</span>}
+                      自己ベスト {physFmt(it, best)}{isBest && <span style={{color:'var(--success)', marginLeft:6}}>★更新</span>}
                     </div>
                     <PhysicalChart series={series} lowerIsBetter={it.lowerIsBetter} tePct={te} />
                     <div className="text-small text-muted" style={{marginTop:2}}>
@@ -4518,7 +4536,7 @@
                   <div key={r.id} className="list-item">
                     <div>
                       <div className="title">{r.date}</div>
-                      <div className="sub">{filled.length ? filled.map(it => `${it.name} ${physVal(r,it.key)}${it.unit}`).join(' / ') : '（数値なし）'}</div>
+                      <div className="sub">{filled.length ? filled.map(it => `${it.name} ${physFmt(it, physVal(r,it.key))}`).join(' / ') : '（数値なし）'}</div>
                       {r.byRole && <div className="sub" style={{marginTop:2, color:'var(--text-3)'}}>記録: {r.byRole === 'self' ? '本人' : (r.byRole === 'coach' ? '顧問' : 'マネージャー')}</div>}
                       {r.memo && <div className="sub" style={{marginTop:2}}>📝 {r.memo}</div>}
                     </div>
@@ -4548,12 +4566,19 @@
 
       const submit = () => {
         const itemsObj = {};
+        const bad = []; // 分:秒 の書式が不正な種目名
         inputItems.forEach(it => {
           const raw = vals[it.key];
-          if (raw === '' || raw === undefined || raw === null) return; // 空欄は未測定として除外
+          if (raw === '' || raw === undefined || raw === null || String(raw).trim() === '') return; // 空欄は未測定として除外
+          if (it.format === 'mmss') {
+            const sec = parseMmss(raw);
+            if (sec === null) bad.push(it.name); else itemsObj[it.key] = sec;
+            return;
+          }
           const n = Number(raw);
           if (!isNaN(n)) itemsObj[it.key] = n;
         });
+        if (bad.length) { alert(`${bad.join('・')} は「分:秒」で入力してください（例 12:34）`); return; }
         if (Object.keys(itemsObj).length === 0) {
           if (!confirm('数値が1つも入っていません。このまま保存しますか？')) return;
         }
@@ -4576,12 +4601,21 @@
       const renderItem = (it) => (
         <div key={it.key} className="form-group">
           <label>{it.name}（{it.unit}）{it.reference ? ' ・参考' : (it.lowerIsBetter === undefined ? '' : (it.lowerIsBetter ? ' ↓速い/小さいほど良い' : ' ↑大きいほど良い'))}{it.selfOnly ? ' ・基準値なし(自己比較)' : ''}</label>
-          <input
-            type="number" inputMode="decimal" step="any"
-            value={vals[it.key] === undefined ? '' : vals[it.key]}
-            onChange={e => setVal(it.key, e.target.value)}
-            placeholder="未測定なら空欄"
-          />
+          {it.format === 'mmss' ? (
+            <input
+              type="text" inputMode="text" autoComplete="off"
+              value={vals[it.key] === undefined ? '' : vals[it.key]}
+              onChange={e => setVal(it.key, e.target.value)}
+              placeholder="例 12:34（未測定なら空欄）"
+            />
+          ) : (
+            <input
+              type="number" inputMode="decimal" step="any"
+              value={vals[it.key] === undefined ? '' : vals[it.key]}
+              onChange={e => setVal(it.key, e.target.value)}
+              placeholder="未測定なら空欄"
+            />
+          )}
         </div>
       );
 
