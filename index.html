@@ -29,6 +29,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js"></script>
   <script src="./lib/dedupe.js"></script>
+  <script src="./lib/shotstats.js"></script>
   <script>
     // ====== Firebase 初期化 ======
     const firebaseConfig = {
@@ -4197,6 +4198,17 @@
                   <div className="stat-row"><span className="label">🧤 GK</span><span className="value">{p.statsTotal.saves}セーブ / 枠内{p.statsTotal.faced}本（{p.statsTotal.saveRate}%）</span></div>
                 )}
               </div>
+              {(() => {
+                const rows = HMShotStats.allRows(p.statsGames);
+                return (
+                  <div className="mb-16">
+                    <GkCourseCard rows={rows} title="🧤 抜かれたコース（累計）" />
+                    <ZoneCard rows={rows} title="位置別（累計）" />
+                    <ShotMapCard rows={rows} title="🗺 シュートマップ（累計）" dense />
+                    <TurnoverReasonCard rows={rows} title="ミスの内訳（累計）" />
+                  </div>
+                );
+              })()}
               {p.statsGames.slice(0, 8).map(g => (
                 <div key={g.gameId} className="list-item">
                   <div>
@@ -4822,6 +4834,100 @@
       return { games, total };
     }
 
+    // ====== 位置別・シュートマップ・ミス理由・GKコース（選手・顧問で共通。集計は lib/shotstats.js） ======
+    // 位置別: 本数が先。率はその区分が10本以上たまってから（少ない本数の率は偶然で大きく動くため）。
+    function ZoneCard({ rows, title, className }) {
+      const { list, unknown } = HMShotStats.aggregateZones(rows);
+      if (list.length === 0) return null;
+      return (
+        <div className={'card ' + (className || 'mt-16')}>
+          <div className="card-title">{title}</div>
+          <div className="card-subtitle">ゴール数/シュート数。率はその位置が{HMShotStats.RATE_MIN_SHOTS}本以上たまってから出ます。位置ごとに難しさが違うので、他の位置とではなく前の自分と比べよう。</div>
+          {list.map(z => (
+            <div key={z.key} className="stat-row">
+              <span className="label">{z.label}</span>
+              <span className="value">{z.goals}/{z.shots}{z.showRate && `（${z.rate}%）`}</span>
+            </div>
+          ))}
+          {unknown > 0 && <div className="card-subtitle" style={{marginTop:8}}>位置の記録なし: {unknown}本</div>}
+        </div>
+      );
+    }
+
+    // シュートマップ（analyzer座標 x,y=% をそのまま描画。線は analyzer のコート図を1/4に縮めたもの）
+    // dense=true は累計用（点を小さく・半透明にして重なりを見せる）
+    function ShotMapCard({ rows, title, dense, className }) {
+      const pts = (rows || []).filter(r => r && r.mode === 'attack' && r.x !== '' && r.x != null && r.y !== '' && r.y != null);
+      if (pts.length === 0) return null;
+      const color = (r) => r.result === 'goal' ? 'var(--success)' : (r.result === 'save' ? '#f5a900' : (r.result === 'turnover' ? 'var(--text-3)' : 'rgba(255,255,255,0.45)'));
+      const rad = dense ? 1.5 : 1.9;
+      return (
+        <div className={'card ' + (className || 'mt-16')}>
+          <div className="card-title">{title}</div>
+          <div className="card-subtitle">●ゴール ○セーブ/ミス ✕TO（上がゴール側。実線=6m、点線=9m）</div>
+          <svg viewBox="0 0 100 75" style={{width:'100%', background:'rgba(255,255,255,0.04)', borderRadius:8, marginTop:8}}>
+            <rect x="37.5" y="0" width="25" height="1.6" fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="0.7" />
+            <path d="M 12.5 0 A 30 30 0 0 0 42.5 30 L 57.5 30 A 30 30 0 0 0 87.5 0" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="0.5" />
+            <path d="M -2.5 0 A 45 45 0 0 0 42.5 45 L 57.5 45 A 45 45 0 0 0 102.5 0" fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth="0.5" strokeDasharray="2 2" />
+            {pts.map((r, i) => {
+              const x = Number(r.x), y = Number(r.y) * 0.75;
+              if (r.result === 'turnover') {
+                return (
+                  <g key={i} stroke={color(r)} strokeWidth="0.8" opacity={dense ? 0.7 : 1}>
+                    <line x1={x-1.5} y1={y-1.5} x2={x+1.5} y2={y+1.5} />
+                    <line x1={x-1.5} y1={y+1.5} x2={x+1.5} y2={y-1.5} />
+                  </g>
+                );
+              }
+              return <circle key={i} cx={x} cy={y} r={rad}
+                fill={r.result === 'goal' ? color(r) : 'none'} fillOpacity={dense ? 0.75 : 1}
+                stroke={color(r)} strokeWidth={dense ? 0.6 : 0.8} />;
+            })}
+          </svg>
+        </div>
+      );
+    }
+
+    // ミス（ターンオーバー）の理由別。本数だけ。
+    function TurnoverReasonCard({ rows, title, className }) {
+      const { list, total } = HMShotStats.aggregateTurnoverReasons(rows);
+      if (total === 0) return null;
+      return (
+        <div className={'card ' + (className || 'mt-16')}>
+          <div className="card-title">{title}</div>
+          <div className="card-subtitle">全部で {total} 回</div>
+          {list.map(t => (
+            <div key={t.key || 'none'} className="stat-row">
+              <span className="label">{t.label}</span>
+              <span className="value">{t.count} 回</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // GK: 抜かれたコース（ゴール6マス）。本数だけ。色の濃さは失点の本数に連動。
+    function GkCourseCard({ rows, title, className }) {
+      const { cells, total } = HMShotStats.aggregateGkCourses(rows);
+      if (total === 0) return null;
+      const max = Math.max(1, ...cells.map(c => c.conceded));
+      return (
+        <div className={'card ' + (className || 'mt-16')}>
+          <div className="card-title">{title}</div>
+          <div className="card-subtitle">失点/枠内に来た本数（コースの記録がある {total}本）。向きはシューターから見たゴール＝記録アプリの入力と同じ。GKから見ると左右が逆です。</div>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:6, marginTop:10, border:'2px solid var(--border)', borderBottom:'none', borderRadius:'8px 8px 0 0', padding:6}}>
+            {cells.map(c => (
+              <div key={c.key} style={{textAlign:'center', padding:'10px 4px', borderRadius:6,
+                background: c.conceded > 0 ? `rgba(255,255,255,${(0.04 + 0.14 * c.conceded / max).toFixed(3)})` : 'transparent'}}>
+                <div style={{fontSize:'0.75rem', color:'var(--text-2)'}}>{c.label}</div>
+                <div style={{fontWeight:700, fontSize:'1.05rem'}}>{c.faced > 0 ? `${c.conceded}/${c.faced}` : '–'}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
     // ====== My Stats (選手用: 自分のCSV取込済データを表示) ======
     // C: 予防チェック（今日の入力＋週次の予防実施率）【rank36】
     function PreventionCard({ state, update }) {
@@ -4954,6 +5060,8 @@
       const [physEditing, setPhysEditing] = useState(false);
 
       const { games, total } = useMemo(() => aggregateGameStats(myGameStats), [myGameStats]);
+      // 全試合の行（位置別・シュートマップ・ミス理由・GKコースの累計用）
+      const allStatRows = useMemo(() => HMShotStats.allRows(games), [games]);
 
       // 自分がGKか（名簿の position / state.user.position から判定）
       const myIsGK = (state.user && (state.user.isGK || state.user.position === 'GK')) || false;
@@ -5234,6 +5342,11 @@
                 </div>
               )}
 
+              <GkCourseCard rows={allStatRows} title="🧤 抜かれたコース（累計）" />
+              <ZoneCard rows={allStatRows} title="位置別（累計）" />
+              <ShotMapCard rows={allStatRows} title="🗺 シュートマップ（累計）" dense />
+              <TurnoverReasonCard rows={allStatRows} title="ミスの内訳（累計）" />
+
               <div className="section-h">試合別</div>
               {games.map(g => {
                 const hasReflection = !!reflectionsByDate[g.date];
@@ -5313,37 +5426,7 @@
             </div>
           )}
 
-          {/* シュートマップ（analyzer座標 x,y=% をそのまま描画） */}
-          {(() => {
-            const pts = game.rows.filter(r => r.mode === 'attack' && r.x !== '' && r.x != null && r.y !== '' && r.y != null);
-            if (pts.length === 0) return null;
-            const color = (r) => r.result === 'goal' ? 'var(--success)' : (r.result === 'save' ? '#f5a900' : (r.result === 'turnover' ? 'var(--text-3)' : 'rgba(255,255,255,0.45)'));
-            return (
-              <div className="card mt-16">
-                <div className="card-title">🗺 シュートマップ</div>
-                <div className="card-subtitle">●ゴール ○セーブ/ミス ✕TO（上がゴール側）</div>
-                <svg viewBox="0 0 100 75" style={{width:'100%', background:'rgba(255,255,255,0.04)', borderRadius:8, marginTop:8}}>
-                  <rect x="40" y="0" width="20" height="2.2" fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="0.7" />
-                  <path d="M 28 0 A 24 24 0 0 0 72 0" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="0.5" />
-                  <path d="M 16 0 A 38 38 0 0 0 84 0" fill="none" stroke="rgba(255,255,255,0.14)" strokeWidth="0.5" strokeDasharray="2 2" />
-                  {pts.map((r, i) => {
-                    const x = Number(r.x), y = Number(r.y) * 0.75;
-                    if (r.result === 'turnover') {
-                      return (
-                        <g key={i} stroke={color(r)} strokeWidth="0.8">
-                          <line x1={x-1.5} y1={y-1.5} x2={x+1.5} y2={y+1.5} />
-                          <line x1={x-1.5} y1={y+1.5} x2={x+1.5} y2={y-1.5} />
-                        </g>
-                      );
-                    }
-                    return <circle key={i} cx={x} cy={y} r="1.9"
-                      fill={r.result === 'goal' ? color(r) : 'none'}
-                      stroke={color(r)} strokeWidth="0.8" />;
-                  })}
-                </svg>
-              </div>
-            );
-          })()}
+          <ShotMapCard rows={game.rows} title="🗺 シュートマップ" />
 
           {/* 攻撃種別・前後半（サイドの命=速攻が見える） */}
           {(() => {
@@ -5378,7 +5461,7 @@
                 return (
                   <div key={course} className="list-item">
                     <div>
-                      <div className="title">{course}</div>
+                      <div className="title">{HMShotStats.courseLabel(course === '(未分類)' ? '' : course)}</div>
                       <div className="sub">{s.goals}/{s.shots} ({rate}%)</div>
                     </div>
                     <div className="right">
