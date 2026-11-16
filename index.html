@@ -4949,11 +4949,211 @@
       );
     }
 
+    // ====== シュートの飛んだ先・入らなかった内訳・GKの守り方（analyzer の新しい項目を選手に返す） ======
+    const COURSE_LABEL = {
+      TL: '左上', TR: '右上', ML: '左中', MR: '右中', BL: '左下', BR: '右下',
+      OL: '枠の外（左）', OR: '枠の外（右）', OTL: '枠の外（左上）', OTR: '枠の外（右上）'
+    };
+    const courseLabel = (c) => COURSE_LABEL[c] || c;
+    const IN_COURSES = ['TL', 'TR', 'ML', 'MR', 'BL', 'BR'];
+    const OUT_COURSES = ['OTL', 'OTR', 'OL', 'OR'];
+    const GK_LV_ORDER = ['LV1', 'LV2', 'LV3', 'LV0'];
+    const GK_LV_LABEL = { LV1: '✋ 中間位置', LV2: '✊ せーのドン', LV3: '✌ かけひき', LV0: '✖ 動かなかった' };
+    const GK_LV_COLOR = { LV1: '#4ecdc4', LV2: '#f5a900', LV3: '#a78bfa', LV0: '#64748b' };
+    const isBlockRow = (r) => r.result === 'miss' && r.miss_type === 'block';
+    const attackShots = (rows) => (rows || []).filter(r => r.mode === 'attack' && r.result !== 'turnover');
+    const defenseShots = (rows) => (rows || []).filter(r => r.mode === 'defense' && r.result !== 'turnover');
+
+    // 入らなかった分の内訳（本数）
+    function missBreakdown(rows) {
+      const shots = attackShots(rows);
+      return {
+        saved: shots.filter(r => r.result === 'save').length,
+        block: shots.filter(isBlockRow).length,
+        out: shots.filter(r => r.result === 'miss' && !isBlockRow(r)).length
+      };
+    }
+
+    // ゴールの絵。side='attack' は 入った/打った、side='defense' は 止めた/受けた
+    function GoalPicture({ rows, side }) {
+      const list = (side === 'defense' ? defenseShots(rows) : attackShots(rows)).filter(r => !isBlockRow(r));
+      const cell = {};
+      list.forEach(r => {
+        const c = r.course;
+        if (!c) return;
+        if (!cell[c]) cell[c] = { n: 0, hit: 0 };
+        cell[c].n++;
+        if (side === 'defense' ? r.result === 'save' : r.result === 'goal') cell[c].hit++;
+      });
+      const has = Object.keys(cell).length > 0;
+      if (!has) return null;
+      const maxN = Math.max(1, ...IN_COURSES.map(c => (cell[c] ? cell[c].n : 0)));
+      const pos = {
+        TL: [18, 14], TR: [60, 14], ML: [18, 34], MR: [60, 34], BL: [18, 54], BR: [60, 54]
+      };
+      const outPos = { OTL: [0, 0, 60, 12], OTR: [60, 0, 60, 12], OL: [0, 14, 16, 60], OR: [104, 14, 16, 60] };
+      const hitColor = side === 'defense' ? '#f5a900' : '#10b981';
+      return (
+        <svg viewBox="0 0 120 76" style={{width:'100%', marginTop:8}}>
+          {OUT_COURSES.map(c => {
+            const [x, y, w, h] = outPos[c];
+            const n = cell[c] ? cell[c].n : 0;
+            return (
+              <g key={c}>
+                <rect x={x + 0.5} y={y + 0.5} width={w - 1} height={h - 1} rx="1.5" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.18)" strokeWidth="0.4" strokeDasharray="1.5 1.5" />
+                <text x={x + w / 2} y={y + h / 2 + 2} textAnchor="middle" fontSize="5" fill={n > 0 ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.25)'}>{n > 0 ? `外 ${n}` : '外'}</text>
+              </g>
+            );
+          })}
+          <rect x="17" y="13" width="86" height="62" fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth="1.4" />
+          {IN_COURSES.map(c => {
+            const [x, y] = pos[c];
+            const d = cell[c] || { n: 0, hit: 0 };
+            const a = d.n > 0 ? 0.10 + 0.35 * (d.n / maxN) : 0;
+            return (
+              <g key={c}>
+                <rect x={x} y={y} width="42" height="20" fill={`rgba(78,205,196,${a})`} stroke="rgba(255,255,255,0.25)" strokeWidth="0.4" />
+                {d.n > 0 ? (
+                  <text x={x + 21} y={y + 13} textAnchor="middle" fontSize="8" fontWeight="700">
+                    <tspan fill={hitColor}>{d.hit}</tspan><tspan fill="rgba(255,255,255,0.75)">／{d.n}</tspan>
+                  </text>
+                ) : (
+                  <text x={x + 21} y={y + 12.5} textAnchor="middle" fontSize="6" fill="rgba(255,255,255,0.2)">—</text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      );
+    }
+
+    // シューター用: 飛んだ先の絵 + 入らなかった内訳
+    function ShotCourseCard({ rows, title }) {
+      const shots = attackShots(rows);
+      if (shots.length === 0) return null;
+      const mb = missBreakdown(rows);
+      const pic = <GoalPicture rows={rows} side="attack" />;
+      return (
+        <div className="card mt-16">
+          <div className="card-title">{title}</div>
+          {pic && <div className="card-subtitle">入った本数／そこへ打った本数（シューターから見た向き）</div>}
+          {pic}
+          <div className="stat-row mt-16"><span className="label">止められた</span><span className="value">{mb.saved} 本</span></div>
+          <div className="stat-row"><span className="label">枠の外・ポスト</span><span className="value">{mb.out} 本</span></div>
+          {(mb.block > 0 || shots.some(r => r.miss_type !== undefined)) && (
+            <div className="stat-row"><span className="label">DFのブロック</span><span className="value">{mb.block} 本</span></div>
+          )}
+        </div>
+      );
+    }
+
+    // シューター用（たまった分）: 相手GKの守り方ごとに、自分のシュートがどうだったか
+    function ShotVsGkTypeCard({ rows }) {
+      const shots = attackShots(rows).filter(r => r.gk_lv && !isBlockRow(r));
+      if (shots.length === 0) return null;
+      return (
+        <div className="card mt-16">
+          <div className="card-title">相手GKの守り方ごとの自分のシュート</div>
+          <div className="card-subtitle">守り方は、記録した人が見て付けたもの</div>
+          {GK_LV_ORDER.map(lv => {
+            const l = shots.filter(r => r.gk_lv === lv);
+            if (l.length === 0) return null;
+            const g = l.filter(r => r.result === 'goal').length;
+            const sv = l.filter(r => r.result === 'save').length;
+            const out = l.length - g - sv;
+            return (
+              <div key={lv} className="stat-row">
+                <span className="label">{GK_LV_LABEL[lv]}</span>
+                <span className="value" style={{textAlign:'right'}}>入った {g}・止められた {sv}・外れた {out}</span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // GK本人用: やられた所/止めた所の絵 + 守り方を何本使ったか（withSaves なら止めた本数も）
+    function GkCourseCard({ rows, title, withSaves }) {
+      const faced = defenseShots(rows).filter(r => r.result === 'save' || r.result === 'goal');
+      if (faced.length === 0) return null;
+      const pic = <GoalPicture rows={faced} side="defense" />;
+      const lvRows = faced.filter(r => r.gk_lv);
+      if (!pic && lvRows.length === 0) return null;
+      return (
+        <div className="card mt-16">
+          <div className="card-title">{title}</div>
+          {pic && <div className="card-subtitle">止めた本数／枠に来た本数（シューターから見た向き）</div>}
+          {pic}
+          {lvRows.length > 0 && (
+            <>
+              <div className="card-subtitle" style={{marginTop:12}}>使った守り方（記録した人が見て付けたもの）</div>
+              {GK_LV_ORDER.map(lv => {
+                const l = lvRows.filter(r => r.gk_lv === lv);
+                if (l.length === 0) return null;
+                const sv = l.filter(r => r.result === 'save').length;
+                return (
+                  <div key={lv} className="stat-row">
+                    <span className="label">{GK_LV_LABEL[lv]}</span>
+                    <span className="value">{withSaves ? `止めた ${sv}／${l.length} 本` : `${l.length} 本`}</span>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // GK本人用（たまった分）: 月ごとに、どの守り方を何本使ったか
+    function GkLvMonthlyCard({ rows }) {
+      const faced = defenseShots(rows).filter(r => (r.result === 'save' || r.result === 'goal') && r.gk_lv && r.date);
+      if (faced.length === 0) return null;
+      const byMonth = {};
+      faced.forEach(r => {
+        const m = String(r.date).slice(0, 7);
+        if (!byMonth[m]) byMonth[m] = {};
+        byMonth[m][r.gk_lv] = (byMonth[m][r.gk_lv] || 0) + 1;
+      });
+      const months = Object.keys(byMonth).sort();
+      return (
+        <div className="card mt-16">
+          <div className="card-title">月ごとの守り方</div>
+          <div className="card-subtitle">
+            {GK_LV_ORDER.map(lv => (
+              <span key={lv} style={{marginRight:10, whiteSpace:'nowrap'}}>
+                <span style={{display:'inline-block', width:10, height:10, borderRadius:2, background:GK_LV_COLOR[lv], marginRight:4}} />{GK_LV_LABEL[lv]}
+              </span>
+            ))}
+          </div>
+          {months.map(m => {
+            const total = GK_LV_ORDER.reduce((a, lv) => a + (byMonth[m][lv] || 0), 0);
+            return (
+              <div key={m} style={{marginTop:10}}>
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:'0.85rem'}}>
+                  <span>{m.replace('-', '年')}月</span><span style={{color:'var(--text-2)'}}>{total} 本</span>
+                </div>
+                <div style={{display:'flex', height:18, borderRadius:4, overflow:'hidden', marginTop:4, background:'rgba(255,255,255,0.06)'}}>
+                  {GK_LV_ORDER.map(lv => {
+                    const n = byMonth[m][lv] || 0;
+                    if (n === 0) return null;
+                    return <div key={lv} title={`${GK_LV_LABEL[lv]} ${n}本`} style={{width: (n / total * 100) + '%', background: GK_LV_COLOR[lv], color:'#0b1220', fontSize:'0.7rem', fontWeight:700, textAlign:'center', lineHeight:'18px'}}>{n}</div>;
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+
     function MyStats({ state, myGameStats, myPhysicals, authUid, onNav, onWriteReflection, showToast, update }) {
       const [selectedGame, setSelectedGame] = useState(null);
       const [physEditing, setPhysEditing] = useState(false);
 
       const { games, total } = useMemo(() => aggregateGameStats(myGameStats), [myGameStats]);
+      // たまった分（全試合の行をまとめたもの）
+      const allRows = useMemo(() => games.reduce((a, g) => a.concat(g.rows || []), []), [games]);
 
       // 自分がGKか（名簿の position / state.user.position から判定）
       const myIsGK = (state.user && (state.user.isGK || state.user.position === 'GK')) || false;
@@ -5234,6 +5434,12 @@
                 </div>
               )}
 
+              {/* たまった分: 飛んだ先・入らなかった内訳・相手GKの守り方ごと / GK本人の分 */}
+              <ShotCourseCard rows={allRows} title="🎯 飛んだ先（たまった分）" />
+              <ShotVsGkTypeCard rows={allRows} />
+              <GkCourseCard rows={allRows} title="🧤 GK：止めた所・やられた所（たまった分）" withSaves />
+              <GkLvMonthlyCard rows={allRows} />
+
               <div className="section-h">試合別</div>
               {games.map(g => {
                 const hasReflection = !!reflectionsByDate[g.date];
@@ -5278,7 +5484,7 @@
       // コース別集計
       const courseStats = {};
       game.rows.filter(r => r.mode === 'attack' && r.result !== 'turnover').forEach(r => {
-        const k = r.course || '(未分類)';
+        const k = isBlockRow(r) ? 'DFのブロック' : (r.course ? courseLabel(r.course) : '(未分類)');
         if (!courseStats[k]) courseStats[k] = { shots: 0, goals: 0 };
         courseStats[k].shots++;
         if (r.result === 'goal') courseStats[k].goals++;
@@ -5312,6 +5518,10 @@
               <div className="stat-row mt-16"><span className="label">失点</span><span className="value">{game.conceded} 点</span></div>
             </div>
           )}
+
+          {/* 飛んだ先の絵と入らなかった内訳 / GK本人の分（この試合） */}
+          <ShotCourseCard rows={game.rows} title="🎯 飛んだ先（この試合）" />
+          <GkCourseCard rows={game.rows} title="🧤 GK：止めた所・やられた所（この試合）" />
 
           {/* シュートマップ（analyzer座標 x,y=% をそのまま描画） */}
           {(() => {
