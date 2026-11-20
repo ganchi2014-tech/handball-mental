@@ -1719,6 +1719,7 @@
           <div className="login">
             <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
             <p className="subtitle">男子ハンドボール部 メンタル指導</p>
+            <FromLabNotice />
             <div className="login-card">
               <h2 style={{textAlign:'center', marginBottom:20}}>あなたは？</h2>
               <button
@@ -1803,6 +1804,7 @@
             <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
             <p className="subtitle">男子ハンドボール部 メンタル指導</p>
           </div>
+          <div style={{maxWidth:480, margin:'0 auto', width:'100%'}}><FromLabNotice /></div>
 
           {rosterList.length === 0 && !rosterLoaded ? (
             <div className="login-card" style={{maxWidth:480, margin:'0 auto'}}>
@@ -1944,6 +1946,26 @@
     // （mental リポジトリ内の handball-analyzer/ は .gitignore された別リポの作業ツリーで、
     //   Pages/hosting には載らない。公開URLはこちらが正）
     const ANALYZER_URL = 'https://ganchi2014-tech.github.io/handball-analyzer/';
+    // LAB（辞書のアプリ・handball-system）を開く。行き先はここ1か所で決める（オーナー指示 2026-11-20「相互に飛べるように」）。
+    // 末尾の #from=mental は、LAB 側が「メンタルアプリから来た」と分かるための目印（通信には乗らない）。
+    const LAB_URL = 'https://ganchi2014-tech.github.io/handball-system/#from=mental';
+    const openLab = () => window.open(LAB_URL, '_blank');
+    // LAB から来たか（LAB 側のリンクが #from=lab を付ける）
+    const FROM_LAB = /(^|[#&])from=lab(&|$)/.test(String(location.hash || ''));
+    // LAB から来たのに登録の画面が出ている＝いつものアプリとは別の場所（ブラウザ）で開いている。登録し直しを止める知らせ。
+    function FromLabNotice() {
+      if (!FROM_LAB) return null;
+      return (
+        <div className="login-card" style={{marginBottom:12, border:'1px solid var(--warn, #f59e0b)'}}>
+          <div style={{fontWeight:700, marginBottom:6}}>⚠ LABから開きました</div>
+          <div className="text-small" style={{lineHeight:1.7}}>
+            ここが登録の画面になっているときは、いつも使っているメンタルアプリとは別の場所（ブラウザ）で開いています。<br/>
+            <b>ここで登録し直さないでください</b>（名簿とのつながりが、いつものアプリから外れます）。<br/>
+            ホーム画面のアイコンから、いつものメンタルアプリを開いてください。
+          </div>
+        </div>
+      );
+    }
 
     function BottomNav({ view, onChange, isCoach }) {
       const items = isCoach ? [
@@ -2289,7 +2311,7 @@
               <div className="tile-title">呼吸ガイド</div>
               <div className="tile-sub">寝る前1サイクルからOK</div>
             </button>
-            <button className="quick-tile" onClick={() => window.open('https://ganchi2014-tech.github.io/handball-system/', '_blank')}>
+            <button className="quick-tile" onClick={openLab}>
               <span className="tile-icon">🧪</span>
               <div className="tile-title">HANDBALL LAB</div>
               <div className="tile-sub">読み・技術はこっち</div>
@@ -3382,6 +3404,7 @@
                 {labDecl.done === true ? '✅ 達成ずみ' : labDecl.done === false ? '△ まだ — 次の練習で' : '🎯 宣言中'}
                 {' ・振り返りはLABアプリで'}
               </div>
+              <button className="btn-ghost" style={{marginTop:8}} onClick={openLab}>🧪 LABを開く →</button>
             </div>
           )}
 
@@ -5234,6 +5257,20 @@
         storage.isLabLinked(authUid).then(v => { if (alive) setLinked(!!v); }).catch(() => { if (alive) setLinked(null); });
         return () => { alive = false; };
       }, [authUid]);
+      // つなぎを外す（自分のメンタルアプリにつながっている LAB の端末を外す。データベースの決まりで本人に許されている）
+      // 別の端末やブラウザを先につないでしまったときに、自分で直せるようにするため。
+      const unlink = async () => {
+        if (busy || !authUid || !fbDB) return;
+        if (!confirm('LABとのつなぎを外しますか？\n\n記録は消えません。外したあと、つなぎたいLABで「チームと繋ぐ」→ 自分の名前 → PIN でつなぎ直せます。')) return;
+        setBusy(true);
+        try {
+          await fbDB.ref('labLinks/' + authUid).remove();
+          delete storage._labUidCache[authUid];
+          setLinked(false);
+          showToast && showToast('つなぎを外しました');
+        } catch (e) { console.warn('[unlink lab]', e); alert('外せませんでした。通信を確かめて、もう一度押してください。'); }
+        finally { setBusy(false); }
+      };
       const afterKnown = async (p) => {
         // 照合用の形を置き、試しの席を空にする（どちらも失敗しても表示は続ける）
         await ensureLinkPin(authUid, p);
@@ -5266,7 +5303,16 @@
         <>
           <div className="section-h">LABとつなぐ</div>
           <div className="card mb-16">
-            {linked === true && <div className="card-subtitle" style={{marginBottom:8}}>✓ LAB（辞書のアプリ）とつながっています。LABで書いた宣言が「行動宣言」に、LABの記録がこの画面に出ます。</div>}
+            {linked === true && (
+              <>
+                <div className="card-subtitle" style={{marginBottom:8}}>✓ LAB（辞書のアプリ）とつながっています。LABで書いた宣言が「行動宣言」に、LABの記録がこの画面に出ます。</div>
+                <div className="text-small text-muted" style={{marginBottom:8}}>
+                  ちがうLAB（別の端末やブラウザ）をつないでしまったときは、
+                  <button className="btn-ghost" style={{display:'inline', padding:'0 4px', textDecoration:'underline'}} disabled={busy} onClick={unlink}>つなぎを外す</button>
+                  でやり直せます。
+                </div>
+              </>
+            )}
             {linked === false && (
               <>
                 <div className="card-subtitle" style={{marginBottom:6}}>LAB（辞書のアプリ）とは、まだつながっていません。つなぐ手順：</div>
@@ -5278,6 +5324,7 @@
                 <div className="text-small text-muted" style={{marginBottom:8}}>つながなくても、このアプリもLABも全部使えます。</div>
               </>
             )}
+            <button className="btn-ghost" style={{width:'100%', marginBottom:8}} onClick={openLab}>🧪 LAB（辞書のアプリ）を開く →</button>
             <div className="stat-row" style={{alignItems:'center'}}>
               <span className="label">🔑 PIN（4桁）</span>
               <span className="value" style={{letterSpacing: pin ? 4 : 0}}>{pin ? pin : '●●●●'}</span>
@@ -5479,7 +5526,7 @@
                   <div key={i} className="stat-row"><span className="label">・</span><span className="value" style={{maxWidth:'80%', textAlign:'right'}}>{nm}</span></div>
                 ))}
                 <button className="btn-ghost mt-16" style={{width:'100%'}}
-                  onClick={() => window.open('https://ganchi2014-tech.github.io/handball-system/', '_blank')}>LABで課題を作る →</button>
+                  onClick={openLab}>LABで課題を作る →</button>
               </div>
             </>
           )}
@@ -5536,7 +5583,7 @@
                 )}
                 <div className="card-subtitle" style={{marginTop:8}}>LABの記録から（この端末のあなたの分だけ）</div>
                 <button className="btn-ghost mt-16" style={{width:'100%'}}
-                  onClick={() => window.open('https://ganchi2014-tech.github.io/handball-system/', '_blank')}>
+                  onClick={openLab}>
                   🧪 LABを開く →
                 </button>
               </div>
