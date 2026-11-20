@@ -6,7 +6,9 @@
 // v4の問題: ASSETS の @babel/standalone がバージョン無指定(=latest=v8)で index.html(@7.26.4固定)と不一致。
 // 圏外では固定版(@7.26.4)がプリキャッシュされず白画面になり得た → v5で @7.26.4 に統一（白画面固定の貫徹）。
 // v6: lib/dedupe.js（名簿統合・CSV取込の純関数）をプリキャッシュに追加
-const CACHE_NAME = 'handball-mental-v6';
+// v7: ./lab/（辞書のアプリ LAB をこの住所の下にも置いた）は、この裏方では扱わない。
+//     扱うと、電波が悪い初回に LAB の住所でこのアプリの画面を返してしまうため。LAB は自分の裏方を持つ。
+const CACHE_NAME = 'handball-mental-v7';
 
 // アプリ起動に必要な全資産（CDN含む）を初回インストール時にプリキャッシュ
 const ASSETS = [
@@ -64,6 +66,10 @@ self.addEventListener('fetch', e => {
   }
 
   const isSameOrigin = url.origin === self.location.origin;
+  // ./lab/ の下（LAB）は扱わない＝ブラウザ標準の読み込みに任せる
+  if (isSameOrigin && url.pathname.startsWith(new URL('./lab/', self.registration.scope).pathname)) {
+    return;
+  }
   const isHtml = e.request.mode === 'navigate' ||
     (isSameOrigin && (url.pathname === '/' || url.pathname.endsWith('/') || url.pathname.endsWith('index.html')));
 

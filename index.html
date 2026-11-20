@@ -7,8 +7,8 @@
   <link rel="manifest" href="./manifest.json">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="MENTAL">
-  <title>HANDBALL MENTAL</title>
+  <meta name="apple-mobile-web-app-title" content="兄弟社ホーム">
+  <title>兄弟社ホーム</title>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
@@ -1364,7 +1364,7 @@
       if (!authReady) {
         return (
           <div className="login">
-            <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
+            <h1>兄弟社<span style={{color:'var(--primary)'}}>ホーム</span></h1>
             <p className="subtitle">接続中...</p>
           </div>
         );
@@ -1688,7 +1688,7 @@
       if (savedPin) {
         return (
           <div className="login">
-            <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
+            <h1>兄弟社<span style={{color:'var(--primary)'}}>ホーム</span></h1>
             <p className="subtitle">{savedName} さん、お帰りなさい</p>
             <div className="login-card">
               <h2>PIN を入力</h2>
@@ -1717,8 +1717,8 @@
       if (!coachMode && !playerMode) {
         return (
           <div className="login">
-            <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
-            <p className="subtitle">男子ハンドボール部 メンタル指導</p>
+            <h1>兄弟社<span style={{color:'var(--primary)'}}>ホーム</span></h1>
+            <p className="subtitle">男子ハンドボール部の入口（メンタル・振り返り・辞書）</p>
             <FromLabNotice />
             <div className="login-card">
               <h2 style={{textAlign:'center', marginBottom:20}}>あなたは？</h2>
@@ -1749,7 +1749,7 @@
       if (coachMode) {
         return (
           <div className="login">
-            <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
+            <h1>兄弟社<span style={{color:'var(--primary)'}}>ホーム</span></h1>
             <p className="subtitle">顧問・コーチ登録</p>
             {Object.keys(coachNames).length > 0 && (
               <div className="login-card" style={{marginBottom:12}}>
@@ -1801,8 +1801,8 @@
       return (
         <div className="login" style={{padding:'24px 16px', alignItems:'stretch'}}>
           <div style={{textAlign:'center', marginBottom:24}}>
-            <h1>HANDBALL <span style={{color:'var(--primary)'}}>MENTAL</span></h1>
-            <p className="subtitle">男子ハンドボール部 メンタル指導</p>
+            <h1>兄弟社<span style={{color:'var(--primary)'}}>ホーム</span></h1>
+            <p className="subtitle">男子ハンドボール部の入口（メンタル・振り返り・辞書）</p>
           </div>
           <div style={{maxWidth:480, margin:'0 auto', width:'100%'}}><FromLabNotice /></div>
 
@@ -1946,10 +1946,12 @@
     // （mental リポジトリ内の handball-analyzer/ は .gitignore された別リポの作業ツリーで、
     //   Pages/hosting には載らない。公開URLはこちらが正）
     const ANALYZER_URL = 'https://ganchi2014-tech.github.io/handball-analyzer/';
-    // LAB（辞書のアプリ・handball-system）を開く。行き先はここ1か所で決める（オーナー指示 2026-11-20「相互に飛べるように」）。
-    // 末尾の #from=mental は、LAB 側が「メンタルアプリから来た」と分かるための目印（通信には乗らない）。
-    const LAB_URL = 'https://ganchi2014-tech.github.io/handball-system/#from=mental';
-    const openLab = () => window.open(LAB_URL, '_blank');
+    // LAB（辞書のアプリ・handball-system）を開く。行き先はここ1か所で決める。
+    // オーナー指示（2026-11-20）「入口を統一」：LAB は、このアプリの住所の下（./lab/）にも置いてある。
+    // 同じ画面のまま移るので、iPhoneでホーム画面のアイコンから使っていても、同じ保存場所でLABが開く
+    // （別の住所を開くと、アイコンの外＝別の保存場所で開いてしまう）。
+    const LAB_URL = new URL('./lab/', window.location.href).href;
+    const openLab = () => { window.location.href = LAB_URL; };
     // LAB から来たか（LAB 側のリンクが #from=lab を付ける）
     const FROM_LAB = /(^|[#&])from=lab(&|$)/.test(String(location.hash || ''));
     // LAB から来たのに登録の画面が出ている＝いつものアプリとは別の場所（ブラウザ）で開いている。登録し直しを止める知らせ。
@@ -1959,9 +1961,9 @@
         <div className="login-card" style={{marginBottom:12, border:'1px solid var(--warn, #f59e0b)'}}>
           <div style={{fontWeight:700, marginBottom:6}}>⚠ LABから開きました</div>
           <div className="text-small" style={{lineHeight:1.7}}>
-            ここが登録の画面になっているときは、いつも使っているメンタルアプリとは別の場所（ブラウザ）で開いています。<br/>
+            ここが登録の画面になっているときは、いつも使っている兄弟社ホーム（前のメンタルアプリ）とは別の場所（ブラウザ）で開いています。<br/>
             <b>ここで登録し直さないでください</b>（名簿とのつながりが、いつものアプリから外れます）。<br/>
-            ホーム画面のアイコンから、いつものメンタルアプリを開いてください。
+            ホーム画面のアイコンから、いつものアプリを開いてください。
           </div>
         </div>
       );
@@ -2163,6 +2165,21 @@
         <>
           <h2 className="greeting">{greeting}、{state.user.name}</h2>
           <p className="greeting-sub">{today.getMonth()+1}月{today.getDate()}日 ({['日','月','火','水','木','金','土'][today.getDay()]})</p>
+
+          {/* 入口（オーナー指示 2026-11-20「入口を統一」）：ここから全部へ行ける */}
+          <div className="section-h">入口</div>
+          <div className="quick-grid">
+            <button className="quick-tile" onClick={openLab}>
+              <span className="tile-icon">📖</span>
+              <div className="tile-title">辞書・振り返り（LAB）</div>
+              <div className="tile-sub">場面から調べる・次に試すことを宣言</div>
+            </button>
+            <button className="quick-tile" onClick={() => onNav('stats')}>
+              <span className="tile-icon">📈</span>
+              <div className="tile-title">マイ統計</div>
+              <div className="tile-sub">自分の数字・LABとつなぐ</div>
+            </button>
+          </div>
 
           {/* LAB試合ループ位相カード（LABで次の試合日を設定した選手のみ・平常時は非表示） */}
           {labLoop && (() => {
@@ -5317,9 +5334,9 @@
               <>
                 <div className="card-subtitle" style={{marginBottom:6}}>LAB（辞書のアプリ）とは、まだつながっていません。つなぐ手順：</div>
                 <ol style={{margin:'0 0 8px', paddingLeft:20, fontSize:'var(--fs-sm)', lineHeight:1.7, color:'var(--text-2)'}}>
-                  <li>LABのホームの下のほうにある「🔗 チームと繋ぐ」を押す</li>
-                  <li>名簿から自分の名前を押す</li>
-                  <li>PINを聞かれたら、下のPIN（4桁）を入れる</li>
+                  <li>下の「🧪 LAB（辞書のアプリ）を開く」を押す</li>
+                  <li>LABのホームの下のほうにある「🔗 チームと繋ぐ」を押し、名簿から自分の名前を押す</li>
+                  <li>「つなぐ」を押す（ここから開いたLABなら、PINは打たなくてよい。聞かれたら下の4桁を入れる）</li>
                 </ol>
                 <div className="text-small text-muted" style={{marginBottom:8}}>つながなくても、このアプリもLABも全部使えます。</div>
               </>

@@ -1,0 +1,26 @@
+{
+  "name": "HANDBALL LAB — 近江兄弟社高校ハンドボール部",
+  "short_name": "HANDBALL LAB",
+  "description": "選手と指導者のための戦術ガイド。33ファイル386セクションの辞書、辞書チャット質問、振り返り10モード、課題解決、練習プラン作成。",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#06080f",
+  "theme_color": "#0a101e",
+  "orientation": "portrait",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["sports", "education", "reference"]
+}

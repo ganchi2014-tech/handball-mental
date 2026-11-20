@@ -1,7 +1,7 @@
 {
-  "name": "HANDBALL MENTAL",
-  "short_name": "Mental",
-  "description": "ハンドボール部 メンタル指導＋試合振り返り",
+  "name": "兄弟社ホーム",
+  "short_name": "兄弟社ホーム",
+  "description": "男子ハンドボール部の入口。メンタルの記録・試合の振り返り・辞書（LAB）",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
