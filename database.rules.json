@@ -91,7 +91,7 @@
     "labLinks": {
       "$mentalUid": {
         ".read": "auth != null && (auth.uid === $mentalUid || data.child('labUid').val() === auth.uid || root.child('coaches').child(auth.uid).exists())",
-        ".write": "auth != null && ((newData.exists() && newData.child('labUid').val() === auth.uid && newData.child('rosterId').isString() && (!data.exists() || data.child('labUid').val() === auth.uid)) || (!newData.exists() && data.exists() && (data.child('labUid').val() === auth.uid || auth.uid === $mentalUid)) || (root.child('coaches').child(auth.uid).exists() && data.exists() && newData.exists() && newData.child('labUid').val() === data.child('labUid').val() && newData.child('rosterId').isString()))",
+        ".write": "auth != null && ((newData.exists() && newData.child('labUid').val() === auth.uid && newData.child('rosterId').isString() && (!data.exists() || data.child('labUid').val() === auth.uid) && root.child('linkPins').child($mentalUid).isString() && newData.child('try').isString() && root.child('linkTries').child($mentalUid).child(newData.child('try').val()).child('labUid').val() === auth.uid && root.child('linkTries').child($mentalUid).child(newData.child('try').val()).child('pinHash').val() === root.child('linkPins').child($mentalUid).val()) || (!newData.exists() && data.exists() && (data.child('labUid').val() === auth.uid || auth.uid === $mentalUid)) || (root.child('coaches').child(auth.uid).exists() && data.exists() && newData.exists() && newData.child('labUid').val() === data.child('labUid').val() && newData.child('rosterId').isString()))",
         ".validate": "!newData.exists() || newData.hasChildren(['labUid', 'rosterId'])"
       }
     },
@@ -100,6 +100,25 @@
       ".read": "auth != null",
       "$id": {
         ".write": "auth != null && ((!data.exists() && newData.exists() && newData.child('author').val() === auth.uid) || (data.exists() && data.child('author').val() === auth.uid && (!newData.exists() || newData.child('author').val() === auth.uid)))"
+      }
+    },
+
+    "linkPins": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.isString() && newData.val().length === 64"
+      }
+    },
+
+    "linkTries": {
+      "$mentalUid": {
+        ".read": "auth != null && (auth.uid === $mentalUid || root.child('coaches').child(auth.uid).exists())",
+        ".write": "auth != null && !newData.exists() && (auth.uid === $mentalUid || root.child('coaches').child(auth.uid).exists())",
+        "$slot": {
+          ".write": "auth != null && !data.exists() && newData.exists() && $slot.matches(/^[0-9]$/)",
+          ".validate": "newData.hasChildren(['labUid', 'pinHash']) && newData.child('labUid').val() === auth.uid && newData.child('pinHash').isString() && newData.child('pinHash').val().length === 64"
+        }
       }
     },
 

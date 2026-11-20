@@ -857,6 +857,23 @@
           return uid;
         }
       },
+      // ----- LAB とつなぐときのPIN -----
+      // 照合用の形（64文字）を linkPins/{自uid} に置く（読めるのは本人だけ。LAB は読めず、決まりが比べる）
+      saveLinkPin: async (uid, hash) => {
+        if (!fbDB || !uid || !hash) return;
+        return fbDB.ref('linkPins/' + uid).set(hash);
+      },
+      // 試しの席（linkTries/{自uid}・10個まで）を空にする。空にできるのは本人と顧問だけ
+      clearLinkTries: async (uid) => {
+        if (!fbDB || !uid) return;
+        return fbDB.ref('linkTries/' + uid).remove();
+      },
+      // この端末（メンタル）に LAB がつながっているか。labLinks/{自uid} があり、名簿の突合も通ること
+      isLabLinked: async (uid) => {
+        if (!fbDB || !uid) return false;
+        const labUid = await storage.resolveLabUid(uid);
+        return !!labUid && labUid !== uid;
+      },
       // 本人の LAB 記録ノードを一回読み（ブリッジ解決込み）。読めなければ空配列
       getMyLabNode: async (uid, node) => {
         if (!fbDB || !uid) return [];
@@ -980,6 +997,56 @@
       const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
       return 'v2:' + s + ':' + hex;
     }
+    // ====== LAB とつなぐときのPIN（オーナー指示 2026-11-20） ======
+    // 「PINはメンタルアプリの画面で見れるように」「つなげるときにPINが同じなら許可」。
+    // PINの元の数字はどこにも残していない（この端末に崩した形だけがある）ので、
+    // 見せるときは 0000〜9999 を順に試して、崩した形と合うものを探す。
+    // 見つからない・2つ以上当たる（旧v1形式でごくまれ）ときは null を返し、画面でPINを決め直してもらう。
+    async function recoverPin(stored) {
+      if (!stored) return null;
+      if (stored.indexOf('v2:') === 0) {
+        const salt = stored.split(':')[1];
+        for (let i = 0; i < 10000; i++) {
+          const pin = String(i).padStart(4, '0');
+          if ((await hashPinV2(pin, salt)) === stored) return pin;
+        }
+        return null;
+      }
+      let found = null;
+      for (let i = 0; i < 10000; i++) {
+        const pin = String(i).padStart(4, '0');
+        if (hashPin(pin) === stored) { if (found !== null) return null; found = pin; }
+      }
+      return found;
+    }
+    // 照合用の形（64文字）。LAB（handball-system の app/src/lib/linkPin.js）と【同じ作り方】でなければならない。
+    // 片方だけ変えると、正しいPINでもつながらなくなる。比べるのはデータベースの決まり（database.rules.json）。
+    async function linkPinHash(mentalUid, pin) {
+      const data = new TextEncoder().encode('handball-link|' + String(mentalUid) + '|' + String(pin));
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    // 照合用の形をデータベースの本人だけが読める場所（linkPins/{uid}）に置く。
+    // 割り出しは重いので、結果の形だけをこの端末に控えておく（PINそのものは控えない）。
+    // 決まりがまだデータベースに入っていない間は、書き込みが断られるだけ（何も漏れない・アプリは止まらない）。
+    const LINK_PIN_CACHE_KEY = 'mental_link_pin_cache';
+    async function ensureLinkPin(authUid, knownPin) {
+      if (!authUid) return false;
+      const stored = localStorage.getItem(PIN_KEY) || '';
+      if (!stored) return false;
+      let cache = null;
+      try { cache = JSON.parse(localStorage.getItem(LINK_PIN_CACHE_KEY) || 'null'); } catch (e) { cache = null; }
+      let hash = (cache && cache.src === stored && cache.uid === authUid) ? cache.hash : null;
+      if (!hash) {
+        const pin = knownPin || await recoverPin(stored);
+        if (!pin) return false;
+        hash = await linkPinHash(authUid, pin);
+        localStorage.setItem(LINK_PIN_CACHE_KEY, JSON.stringify({ src: stored, uid: authUid, hash }));
+      }
+      try { await storage.saveLinkPin(authUid, hash); return true; }
+      catch (e) { console.debug('[linkPin]', e); return false; }
+    }
+
     // 保存形式（v1/v2）を自動判別して検証
     async function verifyPin(pin, stored) {
       if (!stored) return false;
@@ -1125,6 +1192,12 @@
           .then(() => { lastDeclJsonRef.current = json; })
           .catch(e => console.debug('[declShared]', e));
       }, [state.declarations, authUid, state.user]);
+
+      // ── LAB とつなぐときのPIN：照合用の形をデータベースに置いておく（選手だけ・失敗しても止めない）
+      useEffect(() => {
+        if (!authUid || !state.user || state.user.isCoach || !state.user.rosterId) return;
+        ensureLinkPin(authUid).catch(e => console.debug('[linkPin ensure]', e));
+      }, [authUid, state.user && state.user.rosterId, state.user && state.user.isCoach]);
 
       // ── LAB の行動宣言（⚡プレーの宣言）を一回読み — 宣言画面のカード用（読めなければ非表示が正）
       const [labDecl, setLabDecl] = useState(null);
@@ -5147,6 +5220,87 @@
     }
 
 
+    // ====== LABとつなぐ（手順とPIN） ======
+    // オーナー指示（2026-11-20）：つながっていない人に手順を知らせる／PINを画面で見られるようにする。
+    function LabLinkCard({ authUid, showToast }) {
+      const [linked, setLinked] = useState(null);      // null=確かめ中 | true | false
+      const [pin, setPin] = useState(null);            // 表示中のPIN（押したときだけ。保存しない）
+      const [busy, setBusy] = useState(false);
+      const [needNew, setNeedNew] = useState(false);   // 割り出せなかった → 決め直す
+      const [newPin, setNewPin] = useState('');
+      useEffect(() => {
+        let alive = true;
+        if (!authUid) { setLinked(null); return; }
+        storage.isLabLinked(authUid).then(v => { if (alive) setLinked(!!v); }).catch(() => { if (alive) setLinked(null); });
+        return () => { alive = false; };
+      }, [authUid]);
+      const afterKnown = async (p) => {
+        // 照合用の形を置き、試しの席を空にする（どちらも失敗しても表示は続ける）
+        await ensureLinkPin(authUid, p);
+        try { await storage.clearLinkTries(authUid); } catch (e) { console.debug('[linkTries clear]', e); }
+      };
+      const showPin = async () => {
+        if (busy) return;
+        setBusy(true);
+        try {
+          const p = await recoverPin(localStorage.getItem(PIN_KEY) || '');
+          if (!p) { setNeedNew(true); return; }
+          setPin(p);
+          await afterKnown(p);
+        } catch (e) { console.warn('[show pin]', e); setNeedNew(true); }
+        finally { setBusy(false); }
+      };
+      const saveNewPin = async () => {
+        if (busy || !/^[0-9]{4}$/.test(newPin)) return;
+        setBusy(true);
+        try {
+          localStorage.setItem(PIN_KEY, await hashPinV2(newPin));
+          localStorage.removeItem(LINK_PIN_CACHE_KEY);
+          setPin(newPin); setNeedNew(false); setNewPin('');
+          await afterKnown(newPin);
+          showToast && showToast('PINを決め直しました');
+        } catch (e) { console.warn('[new pin]', e); alert('PINを保存できませんでした'); }
+        finally { setBusy(false); }
+      };
+      return (
+        <>
+          <div className="section-h">LABとつなぐ</div>
+          <div className="card mb-16">
+            {linked === true && <div className="card-subtitle" style={{marginBottom:8}}>✓ LAB（辞書のアプリ）とつながっています。LABで書いた宣言が「行動宣言」に、LABの記録がこの画面に出ます。</div>}
+            {linked === false && (
+              <>
+                <div className="card-subtitle" style={{marginBottom:6}}>LAB（辞書のアプリ）とは、まだつながっていません。つなぐ手順：</div>
+                <ol style={{margin:'0 0 8px', paddingLeft:20, fontSize:'var(--fs-sm)', lineHeight:1.7, color:'var(--text-2)'}}>
+                  <li>LABのホームの下のほうにある「🔗 チームと繋ぐ」を押す</li>
+                  <li>名簿から自分の名前を押す</li>
+                  <li>PINを聞かれたら、下のPIN（4桁）を入れる</li>
+                </ol>
+                <div className="text-small text-muted" style={{marginBottom:8}}>つながなくても、このアプリもLABも全部使えます。</div>
+              </>
+            )}
+            <div className="stat-row" style={{alignItems:'center'}}>
+              <span className="label">🔑 PIN（4桁）</span>
+              <span className="value" style={{letterSpacing: pin ? 4 : 0}}>{pin ? pin : '●●●●'}</span>
+            </div>
+            {!needNew && (
+              pin
+                ? <button className="btn-ghost" style={{marginTop:8}} onClick={() => setPin(null)}>PINを隠す</button>
+                : <button className="btn-ghost" style={{marginTop:8}} disabled={busy} onClick={showPin}>{busy ? '確かめ中…' : 'PINを表示'}</button>
+            )}
+            {needNew && (
+              <div style={{marginTop:8}}>
+                <div className="text-small text-muted" style={{marginBottom:6}}>この端末ではPINを確かめられませんでした。新しいPIN（4桁）を決め直してください。</div>
+                <input className="pin-input" type="tel" inputMode="numeric" maxLength={4} value={newPin}
+                  onChange={e => setNewPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))} placeholder="4桁" />
+                <button className="btn" style={{marginTop:8}} disabled={busy || newPin.length !== 4} onClick={saveNewPin}>{busy ? '保存中…' : 'このPINにする'}</button>
+              </div>
+            )}
+            <div className="text-small text-muted" style={{marginTop:8}}>PINは、LABで自分の名前を選ぶときに聞かれます（ほかの人が自分の名前でつながないための確かめ）。人に見せないでください。LABで10回まちがえると止まります。ここで「PINを表示」を押すと、また試せるようになります。</div>
+          </div>
+        </>
+      );
+    }
+
     function MyStats({ state, myGameStats, myPhysicals, authUid, onNav, onWriteReflection, showToast, update }) {
       const [selectedGame, setSelectedGame] = useState(null);
       const [physEditing, setPhysEditing] = useState(false);
@@ -5353,6 +5507,9 @@
           <PreventionCard state={state} update={update} />
           <LoadCard state={state} update={update} showToast={showToast} />
           <ConsentCard state={state} update={update} showToast={showToast} />
+
+          {/* LABとつなぐ（手順とPIN。選手だけ） */}
+          {state.user && !state.user.isCoach && state.user.rosterId && <LabLinkCard authUid={authUid} showToast={showToast} />}
 
           {/* LABコーナー（データなし・読取不可なら非表示） */}
           {(yomiStat || gkPredStat || pvStat) && (
